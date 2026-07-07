@@ -11,6 +11,7 @@ export interface SystemNotification {
   entityId?: string;
   entityName?: string;
   createdAt: string;
+  patientId?: string;
 }
 
 export const getNotifications = async (_req: AuthenticatedRequest, res: Response): Promise<void> => {
@@ -43,7 +44,7 @@ export const getNotifications = async (_req: AuthenticatedRequest, res: Response
           expiresAt: { gte: now, lte: in7Days },
         },
         include: {
-          patient: { select: { fullName: true } },
+          patient: { select: { id: true, fullName: true } },
         },
         orderBy: { expiresAt: 'asc' },
         take: 20,
@@ -56,7 +57,7 @@ export const getNotifications = async (_req: AuthenticatedRequest, res: Response
           scheduledDate: { lt: now },
         },
         include: {
-          patient: { select: { fullName: true } },
+          patient: { select: { id: true, fullName: true } },
           service: { select: { name: true } },
         },
         orderBy: { scheduledDate: 'asc' },
@@ -70,7 +71,7 @@ export const getNotifications = async (_req: AuthenticatedRequest, res: Response
           scheduledDate: { gte: now, lte: in3Days },
         },
         include: {
-          patient: { select: { fullName: true } },
+          patient: { select: { id: true, fullName: true } },
           service: { select: { name: true } },
         },
         orderBy: { scheduledDate: 'asc' },
@@ -108,6 +109,7 @@ export const getNotifications = async (_req: AuthenticatedRequest, res: Response
         entityId: pkg.id,
         entityName: pkg.patient.fullName,
         createdAt: now.toISOString(),
+        patientId: pkg.patient.id,
       });
     }
 
@@ -123,6 +125,7 @@ export const getNotifications = async (_req: AuthenticatedRequest, res: Response
         entityId: retouch.id,
         entityName: retouch.patient.fullName,
         createdAt: now.toISOString(),
+        patientId: retouch.patient.id,
       });
     }
 
@@ -138,6 +141,7 @@ export const getNotifications = async (_req: AuthenticatedRequest, res: Response
         entityId: retouch.id,
         entityName: retouch.patient.fullName,
         createdAt: now.toISOString(),
+        patientId: retouch.patient.id,
       });
     }
 

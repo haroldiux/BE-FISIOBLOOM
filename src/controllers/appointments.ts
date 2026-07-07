@@ -146,6 +146,8 @@ export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<
             id: true,
             fullName: true,
             phone: true,
+            consentSigned: true,
+            medicalHistory: true,
           },
         },
         professional: {
@@ -155,6 +157,7 @@ export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<
             role: true,
           },
         },
+        service: true,
         sessionDetail: true,
       },
       orderBy: {
@@ -753,7 +756,7 @@ export const updateRetouch = async (req: AuthenticatedRequest, res: Response): P
     }
 
     const updated = await prisma.retouchSchedule.update({
-      where: { id: String(id) },
+      where: { id: String(id), tenantId },
       data: {
         ...(status !== undefined && { status }),
         ...(retouchAppointmentId !== undefined && { retouchAppointmentId }),

@@ -68,7 +68,7 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
     }
 
     const product = await prisma.product.update({
-      where: { id: String(id) },
+      where: { id: String(id), tenantId },
       data: {
         ...(name !== undefined && { name }),
         ...(category !== undefined && { category }),
@@ -98,7 +98,7 @@ export const remove = async (req: AuthenticatedRequest, res: Response): Promise<
 
     // Soft delete
     await prisma.product.update({
-      where: { id: String(id) },
+      where: { id: String(id), tenantId },
       data: { isActive: false },
     });
 
@@ -230,7 +230,7 @@ export const adjustStock = async (req: AuthenticatedRequest, res: Response): Pro
 
       // Update product stock
       const updatedProduct = await tx.product.update({
-        where: { id: String(id) },
+        where: { id: String(id), tenantId },
         data: {
           stock: newStock
         }

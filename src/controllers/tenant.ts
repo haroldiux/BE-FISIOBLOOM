@@ -41,8 +41,13 @@ export const getSettings = async (req: AuthenticatedRequest, res: Response): Pro
         email: '',
       },
       whatsapp: {
+        enabled: currentSettings.whatsapp?.enabled ?? true,
+        retouchReminders: currentSettings.whatsapp?.retouchReminders ?? true,
+        anticipationHours: currentSettings.whatsapp?.anticipationHours ?? 24,
+        senderName: currentSettings.whatsapp?.senderName || 'Centro Estético',
         apiToken: maskedToken,
         phoneNumberId: currentSettings.whatsapp?.phoneNumberId || '',
+        messageTemplate: currentSettings.whatsapp?.messageTemplate || 'Hola {{nombre_paciente}}, te recordamos tu cita de {{servicio}} con {{profesional}} mañana a las {{hora_cita}}. ¡Te esperamos!',
       }
     };
 
@@ -90,8 +95,13 @@ export const updateSettings = async (req: AuthenticatedRequest, res: Response): 
         email: contactInfo?.email !== undefined ? contactInfo.email : (currentSettings.contactInfo?.email || ''),
       },
       whatsapp: {
+        enabled: whatsapp?.enabled !== undefined ? Boolean(whatsapp.enabled) : (currentSettings.whatsapp?.enabled ?? true),
+        retouchReminders: whatsapp?.retouchReminders !== undefined ? Boolean(whatsapp.retouchReminders) : (currentSettings.whatsapp?.retouchReminders ?? true),
+        anticipationHours: whatsapp?.anticipationHours !== undefined ? Number(whatsapp.anticipationHours) : (currentSettings.whatsapp?.anticipationHours ?? 24),
+        senderName: whatsapp?.senderName !== undefined ? String(whatsapp.senderName) : (currentSettings.whatsapp?.senderName || 'Centro Estético'),
         apiToken: finalApiToken,
-        phoneNumberId: whatsapp?.phoneNumberId !== undefined ? whatsapp.phoneNumberId : (currentSettings.whatsapp?.phoneNumberId || ''),
+        phoneNumberId: whatsapp?.phoneNumberId !== undefined ? String(whatsapp.phoneNumberId) : (currentSettings.whatsapp?.phoneNumberId || ''),
+        messageTemplate: whatsapp?.messageTemplate !== undefined ? String(whatsapp.messageTemplate) : (currentSettings.whatsapp?.messageTemplate || ''),
       }
     };
 
@@ -106,8 +116,8 @@ export const updateSettings = async (req: AuthenticatedRequest, res: Response): 
     const responseSettings = {
       ...newSettings,
       whatsapp: {
+        ...newSettings.whatsapp,
         apiToken: finalApiToken ? '••••••••••••••••' : '',
-        phoneNumberId: newSettings.whatsapp.phoneNumberId,
       }
     };
 
