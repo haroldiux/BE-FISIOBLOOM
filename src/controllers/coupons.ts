@@ -6,6 +6,7 @@ import { AuthenticatedRequest } from '../middlewares/auth';
 export const validateCoupon = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { code, subtotal } = req.body;
+    const tenantId = req.user!.tenantId;
 
     if (!code || subtotal === undefined) {
       res.status(400).json({ error: 'El código del cupón y el subtotal son requeridos.' });
@@ -13,7 +14,7 @@ export const validateCoupon = async (req: AuthenticatedRequest, res: Response): 
     }
 
     const coupon = await prisma.coupon.findUnique({
-      where: { code: String(code).trim().toUpperCase() }
+      where: { code: String(code).trim().toUpperCase(), tenantId }
     });
 
     if (!coupon) {
@@ -65,9 +66,11 @@ export const validateCoupon = async (req: AuthenticatedRequest, res: Response): 
   }
 };
 
-export const getAllCoupons = async (_req: AuthenticatedRequest, res: Response): Promise<void> => {
+export const getAllCoupons = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const tenantId = req.user!.tenantId;
     const coupons = await prisma.coupon.findMany({
+      where: { tenantId },
       orderBy: { createdAt: 'desc' }
     });
     res.json(coupons);
@@ -89,6 +92,7 @@ export const createCoupon = async (req: AuthenticatedRequest, res: Response): Pr
       maxUses,
       isActive
     } = req.body;
+    const tenantId = req.user!.tenantId;
 
     if (!code || !discountType || discountValue === undefined || !startDate || !endDate || maxUses === undefined) {
       res.status(400).json({ error: 'Los campos code, discountType, discountValue, startDate, endDate y maxUses son requeridos.' });
@@ -97,7 +101,7 @@ export const createCoupon = async (req: AuthenticatedRequest, res: Response): Pr
 
     const formattedCode = String(code).trim().toUpperCase();
     const existing = await prisma.coupon.findUnique({
-      where: { code: formattedCode }
+      where: { code: formattedCode, tenantId }
     });
 
     if (existing) {
@@ -115,7 +119,8 @@ export const createCoupon = async (req: AuthenticatedRequest, res: Response): Pr
         startDate: new Date(startDate),
         endDate: new Date(endDate),
         maxUses: Number(maxUses),
-        isActive: isActive !== undefined ? !!isActive : true
+        isActive: isActive !== undefined ? !!isActive : true,
+        tenantId
       }
     });
 
@@ -139,8 +144,9 @@ export const updateCoupon = async (req: AuthenticatedRequest, res: Response): Pr
       maxUses,
       isActive
     } = req.body;
+    const tenantId = req.user!.tenantId;
 
-    const existing = await prisma.coupon.findUnique({ where: { id: String(id) } });
+    const existing = await prisma.coupon.findUnique({ where: { id: String(id), tenantId } });
     if (!existing) {
       res.status(404).json({ error: 'Cupón no encontrado.' });
       return;
@@ -150,7 +156,7 @@ export const updateCoupon = async (req: AuthenticatedRequest, res: Response): Pr
     if (code !== undefined) {
       formattedCode = String(code).trim().toUpperCase();
       if (formattedCode !== existing.code) {
-        const duplicate = await prisma.coupon.findUnique({ where: { code: formattedCode } });
+        const duplicate = await prisma.coupon.findUnique({ where: { code: formattedCode, tenantId } });
         if (duplicate) {
           res.status(400).json({ error: 'Ya existe otro cupón con este código.' });
           return;
@@ -159,7 +165,7 @@ export const updateCoupon = async (req: AuthenticatedRequest, res: Response): Pr
     }
 
     const coupon = await prisma.coupon.update({
-      where: { id: String(id) },
+      where: { id: String(id), tenantId },
       data: {
         ...(formattedCode !== undefined && { code: formattedCode }),
         ...(description !== undefined && { description }),
@@ -182,14 +188,15 @@ export const updateCoupon = async (req: AuthenticatedRequest, res: Response): Pr
 export const deleteCoupon = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
+    const tenantId = req.user!.tenantId;
 
-    const existing = await prisma.coupon.findUnique({ where: { id: String(id) } });
+    const existing = await prisma.coupon.findUnique({ where: { id: String(id), tenantId } });
     if (!existing) {
       res.status(404).json({ error: 'Cupón no encontrado.' });
       return;
     }
 
-    await prisma.coupon.delete({ where: { id: String(id) } });
+    await prisma.coupon.delete({ where: { id: String(id), tenantId } });
     res.json({ message: 'Cupón eliminado exitosamente.' });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al eliminar el cupón.' });

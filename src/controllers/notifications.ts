@@ -14,8 +14,9 @@ export interface SystemNotification {
   patientId?: string;
 }
 
-export const getNotifications = async (_req: AuthenticatedRequest, res: Response): Promise<void> => {
+export const getNotifications = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const tenantId = req.user!.tenantId;
     const now = new Date();
     const in7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
     const in3Days = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
@@ -29,6 +30,7 @@ export const getNotifications = async (_req: AuthenticatedRequest, res: Response
       // Products with stock <= 5 (low stock threshold)
       prisma.product.findMany({
         where: {
+          tenantId,
           isActive: true,
           stock: { lte: 5 },
         },
@@ -40,6 +42,7 @@ export const getNotifications = async (_req: AuthenticatedRequest, res: Response
       // Treatment packages expiring in the next 7 days
       prisma.treatmentPackage.findMany({
         where: {
+          tenantId,
           status: 'ACTIVE',
           expiresAt: { gte: now, lte: in7Days },
         },
@@ -53,6 +56,7 @@ export const getNotifications = async (_req: AuthenticatedRequest, res: Response
       // Retouches that are PENDING and already past their scheduled date
       prisma.retouchSchedule.findMany({
         where: {
+          tenantId,
           status: 'PENDING',
           scheduledDate: { lt: now },
         },
@@ -67,6 +71,7 @@ export const getNotifications = async (_req: AuthenticatedRequest, res: Response
       // Retouches PENDING and upcoming in the next 3 days
       prisma.retouchSchedule.findMany({
         where: {
+          tenantId,
           status: 'PENDING',
           scheduledDate: { gte: now, lte: in3Days },
         },

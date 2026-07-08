@@ -5,9 +5,9 @@ import { AuthenticatedRequest } from '../middlewares/auth';
 import { scheduleAppointmentReminder } from '../services/reminderQueue';
 
 // Helper: Check if appointment fits in professional's working hours
-const checkWorkingHours = async (professionalId: string, dateTime: Date, duration: number): Promise<{ valid: boolean; error?: string }> => {
+const checkWorkingHours = async (professionalId: string, dateTime: Date, duration: number, tenantId: string): Promise<{ valid: boolean; error?: string }> => {
   const professional = await prisma.user.findUnique({
-    where: { id: professionalId },
+    where: { id: professionalId, tenantId },
     select: { workingHours: true },
   });
 
@@ -53,6 +53,7 @@ const checkProfessionalCollision = async (
   professionalId: string,
   dateTime: Date,
   duration: number,
+  tenantId: string,
   excludeAppointmentId?: string
 ): Promise<boolean> => {
   const newStart = dateTime.getTime();
@@ -60,6 +61,7 @@ const checkProfessionalCollision = async (
 
   const existingAppointments = await prisma.appointment.findMany({
     where: {
+      tenantId,
       professionalId,
       status: {
         in: [AppointmentStatus.PENDIENTE, AppointmentStatus.CONFIRMADA, AppointmentStatus.COMPLETADA],
@@ -86,6 +88,7 @@ const checkCabinCollision = async (
   cabin: string,
   dateTime: Date,
   duration: number,
+  tenantId: string,
   excludeAppointmentId?: string
 ): Promise<boolean> => {
   const newStart = dateTime.getTime();
@@ -93,6 +96,7 @@ const checkCabinCollision = async (
 
   const existingAppointments = await prisma.appointment.findMany({
     where: {
+      tenantId,
       cabin,
       status: {
         in: [AppointmentStatus.PENDIENTE, AppointmentStatus.CONFIRMADA, AppointmentStatus.COMPLETADA],
@@ -118,7 +122,9 @@ export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<
   try {
     const { professionalId, patientId, startDate, endDate } = req.query;
 
-    const whereClause: any = {};
+    const whereClause: any = {
+      tenantId: req.user!.tenantId,
+    };
 
     if (professionalId) {
       whereClause.professionalId = professionalId as string;
@@ -173,6 +179,7 @@ export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<
 
 export const create = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const tenantId = req.user!.tenantId;
     const { id, patientId, professionalId, dateTime, duration, status, cabin } = req.body;
 
     if (!patientId || !professionalId || !dateTime || !duration) {
@@ -183,7 +190,7 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
     // Check if appointment already exists (idempotency for offline sync)
     if (id) {
       const existingAppointment = await prisma.appointment.findUnique({
-        where: { id: String(id) },
+        where: { id: String(id), tenantId },
         include: {
           patient: {
             select: {
@@ -211,14 +218,14 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
     const apptDate = new Date(dateTime);
 
     // 1. Check working hours availability
-    const scheduleCheck = await checkWorkingHours(professionalId, apptDate, Number(duration));
+    const scheduleCheck = await checkWorkingHours(professionalId, apptDate, Number(duration), tenantId);
     if (!scheduleCheck.valid) {
       res.status(400).json({ error: scheduleCheck.error });
       return;
     }
 
     // 2. Check for professional collision
-    const professionalCollision = await checkProfessionalCollision(professionalId, apptDate, Number(duration));
+    const professionalCollision = await checkProfessionalCollision(professionalId, apptDate, Number(duration), tenantId);
     if (professionalCollision) {
       res.status(400).json({ error: 'El profesional ya cuenta con una cita en ese horario' });
       return;
@@ -226,7 +233,7 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
 
     // 3. Check for cabin collision
     if (cabin) {
-      const cabinCollision = await checkCabinCollision(cabin, apptDate, Number(duration));
+      const cabinCollision = await checkCabinCollision(cabin, apptDate, Number(duration), tenantId);
       if (cabinCollision) {
         res.status(400).json({ error: 'La cabina ya está ocupada en ese horario' });
         return;
@@ -237,6 +244,7 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
     const newAppointment = await prisma.appointment.create({
       data: {
         id: id ? String(id) : undefined,
+        tenantId,
         patientId,
         professionalId,
         dateTime: apptDate,
@@ -274,11 +282,12 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
 
 export const update = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const tenantId = req.user!.tenantId;
     const { id } = req.params;
     const { professionalId, dateTime, duration, status, cabin } = req.body;
 
     const existingAppt = await prisma.appointment.findUnique({
-      where: { id: id as string },
+      where: { id: id as string, tenantId },
     });
 
     if (!existingAppt) {
@@ -293,7 +302,7 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
 
     // Validate working hours and overlap only if date, time, duration, professional, or cabin changed
     if (professionalId || dateTime || duration !== undefined || cabin !== undefined) {
-      const scheduleCheck = await checkWorkingHours(targetProfessionalId, targetDateTime, targetDuration);
+      const scheduleCheck = await checkWorkingHours(targetProfessionalId, targetDateTime, targetDuration, tenantId);
       if (!scheduleCheck.valid) {
         res.status(400).json({ error: scheduleCheck.error });
         return;
@@ -303,6 +312,7 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
         targetProfessionalId,
         targetDateTime,
         targetDuration,
+        tenantId,
         id as string
       );
       if (professionalCollision) {
@@ -315,6 +325,7 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
           targetCabin,
           targetDateTime,
           targetDuration,
+          tenantId,
           id as string
         );
         if (cabinCollision) {
@@ -325,7 +336,7 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
     }
 
     const updatedAppt = await prisma.appointment.update({
-      where: { id: id as string },
+      where: { id: id as string, tenantId },
       data: {
         professionalId: targetProfessionalId,
         dateTime: targetDateTime,
@@ -363,10 +374,11 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
 
 export const deleteAppointment = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const tenantId = req.user!.tenantId;
     const { id } = req.params;
 
     const existingAppt = await prisma.appointment.findUnique({
-      where: { id: id as string },
+      where: { id: id as string, tenantId },
     });
 
     if (!existingAppt) {
@@ -375,7 +387,7 @@ export const deleteAppointment = async (req: AuthenticatedRequest, res: Response
     }
 
     await prisma.appointment.delete({
-      where: { id: id as string },
+      where: { id: id as string, tenantId },
     });
 
     res.json({
@@ -388,6 +400,7 @@ export const deleteAppointment = async (req: AuthenticatedRequest, res: Response
 
 export const complete = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const tenantId = req.user!.tenantId;
     const { id } = req.params;
     const { packageLineId, evolutionNotes, measurements } = req.body;
 
@@ -397,7 +410,7 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
     }
 
     const appointment = await prisma.appointment.findUnique({
-      where: { id: id as string },
+      where: { id: id as string, tenantId },
     });
 
     if (!appointment) {
@@ -412,7 +425,7 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
 
     // Fetch and validate package line
     const packageLine = await prisma.treatmentPackageLine.findUnique({
-      where: { id: packageLineId },
+      where: { id: packageLineId, tenantId },
       include: { package: true },
     });
 
@@ -440,19 +453,20 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
     await prisma.$transaction(async (tx) => {
       // 1. Update appointment status
       await tx.appointment.update({
-        where: { id: id as string },
+        where: { id: id as string, tenantId },
         data: { status: AppointmentStatus.COMPLETADA },
       });
 
       // 2. Increment used sessions on line
       const updatedLine = await tx.treatmentPackageLine.update({
-        where: { id: packageLineId },
+        where: { id: packageLineId, tenantId },
         data: { usedSessions: { increment: 1 } },
       });
 
       // 3. Create Session Detail
       await tx.sessionDetail.create({
         data: {
+          tenantId,
           appointmentId: id as string,
           packageLineId,
           evolutionNotes,
@@ -464,13 +478,13 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
       const targetServiceId = appointment.serviceId || packageLine.serviceId;
       if (targetServiceId) {
         const consumables = await tx.serviceConsumable.findMany({
-          where: { serviceId: targetServiceId },
+          where: { serviceId: targetServiceId, tenantId },
         });
 
         for (const consumable of consumables) {
           // Descontar la cantidad del stock del Product
           await tx.product.update({
-            where: { id: consumable.productId },
+            where: { id: consumable.productId, tenantId },
             data: {
               stock: {
                 decrement: consumable.quantity,
@@ -496,7 +510,7 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
       // Buscamos si hay un servicio asociado (de la cita o de la línea del paquete)
       if (targetServiceId) {
         const service = await tx.service.findUnique({
-          where: { id: targetServiceId }
+          where: { id: targetServiceId, tenantId }
         });
         
         if (service && service.treatmentType === 'RETOUCHABLE') {
@@ -522,12 +536,12 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
 
       // 4.5. Lógica de Comisión Automática
       const staffProfile = await tx.staffProfile.findUnique({
-        where: { userId: appointment.professionalId },
+        where: { userId: appointment.professionalId, tenantId },
       });
 
       if (staffProfile) {
         const invoice = await tx.invoice.findFirst({
-          where: { appointmentId: appointment.id },
+          where: { appointmentId: appointment.id, tenantId },
         });
 
         let price = 0;
@@ -537,7 +551,7 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
           const serviceId = appointment.serviceId || packageLine.serviceId;
           if (serviceId) {
             const service = await tx.service.findUnique({
-              where: { id: serviceId },
+              where: { id: serviceId, tenantId },
             });
             if (service) {
               price = service.defaultPrice;
@@ -549,7 +563,7 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
 
         // Check if commission already exists (to prevent duplicates)
         const existingCommission = await tx.commission.findUnique({
-          where: { appointmentId: appointment.id },
+          where: { appointmentId: appointment.id, tenantId },
         });
 
         if (!existingCommission) {
@@ -567,7 +581,7 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
 
       // 5. Evaluate package completion
       const allLines = await tx.treatmentPackageLine.findMany({
-        where: { packageId: packageLine.packageId },
+        where: { packageId: packageLine.packageId, tenantId },
       });
 
       const allSessionsUsed = allLines.every((line) => {
@@ -578,7 +592,7 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
 
       if (allSessionsUsed) {
         await tx.treatmentPackage.update({
-          where: { id: packageLine.packageId },
+          where: { id: packageLine.packageId, tenantId },
           data: { status: 'COMPLETED' },
         });
       }
@@ -594,6 +608,7 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
 
 export const cancelCharge = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const tenantId = req.user!.tenantId;
     const { id } = req.params;
     const { packageLineId } = req.body;
 
@@ -603,7 +618,7 @@ export const cancelCharge = async (req: AuthenticatedRequest, res: Response): Pr
     }
 
     const appointment = await prisma.appointment.findUnique({
-      where: { id: id as string },
+      where: { id: id as string, tenantId },
     });
 
     if (!appointment) {
@@ -618,7 +633,7 @@ export const cancelCharge = async (req: AuthenticatedRequest, res: Response): Pr
 
     // Fetch and validate package line
     const packageLine = await prisma.treatmentPackageLine.findUnique({
-      where: { id: packageLineId },
+      where: { id: packageLineId, tenantId },
       include: { package: true },
     });
 
@@ -646,19 +661,20 @@ export const cancelCharge = async (req: AuthenticatedRequest, res: Response): Pr
     await prisma.$transaction(async (tx) => {
       // 1. Update appointment status
       await tx.appointment.update({
-        where: { id: id as string },
+        where: { id: id as string, tenantId },
         data: { status: AppointmentStatus.CANCELADA_CON_CARGO },
       });
 
       // 2. Increment used sessions on line
       const updatedLine = await tx.treatmentPackageLine.update({
-        where: { id: packageLineId },
+        where: { id: packageLineId, tenantId },
         data: { usedSessions: { increment: 1 } },
       });
 
       // 3. Create Session Detail for No-Show
       await tx.sessionDetail.create({
         data: {
+          tenantId,
           appointmentId: id as string,
           packageLineId,
           evolutionNotes: 'Inasistencia - Cita Penalizada con Cargo',
@@ -667,7 +683,7 @@ export const cancelCharge = async (req: AuthenticatedRequest, res: Response): Pr
 
       // 4. Evaluate package completion
       const allLines = await tx.treatmentPackageLine.findMany({
-        where: { packageId: packageLine.packageId },
+        where: { packageId: packageLine.packageId, tenantId },
       });
 
       const allSessionsUsed = allLines.every((line) => {
@@ -677,7 +693,7 @@ export const cancelCharge = async (req: AuthenticatedRequest, res: Response): Pr
 
       if (allSessionsUsed) {
         await tx.treatmentPackage.update({
-          where: { id: packageLine.packageId },
+          where: { id: packageLine.packageId, tenantId },
           data: { status: 'COMPLETED' },
         });
       }
@@ -773,6 +789,7 @@ export const updateRetouch = async (req: AuthenticatedRequest, res: Response): P
 
 export const updateStatus = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const tenantId = req.user!.tenantId;
     const { id } = req.params;
     const { status } = req.body;
 
@@ -782,7 +799,7 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response): Pr
     }
 
     const existingAppt = await prisma.appointment.findUnique({
-      where: { id: id as string },
+      where: { id: id as string, tenantId },
     });
 
     if (!existingAppt) {
@@ -791,7 +808,7 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response): Pr
     }
 
     const updatedAppt = await prisma.appointment.update({
-      where: { id: id as string },
+      where: { id: id as string, tenantId },
       data: {
         status: status as AppointmentStatus,
       },

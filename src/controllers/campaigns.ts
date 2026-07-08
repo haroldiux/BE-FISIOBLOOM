@@ -3,9 +3,11 @@ import { DiscountType } from '@prisma/client';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
 
-export const getAllCampaigns = async (_req: AuthenticatedRequest, res: Response): Promise<void> => {
+export const getAllCampaigns = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
+    const tenantId = req.user!.tenantId;
     const campaigns = await prisma.campaign.findMany({
+      where: { tenantId },
       include: {
         services: {
           include: {
@@ -33,6 +35,7 @@ export const createCampaign = async (req: AuthenticatedRequest, res: Response): 
       isActive,
       serviceIds
     } = req.body;
+    const tenantId = req.user!.tenantId;
 
     if (!name || !discountType || discountValue === undefined || !startDate || !endDate) {
       res.status(400).json({ error: 'Los campos name, discountType, discountValue, startDate y endDate son requeridos.' });
@@ -48,6 +51,7 @@ export const createCampaign = async (req: AuthenticatedRequest, res: Response): 
         startDate: new Date(startDate),
         endDate: new Date(endDate),
         isActive: isActive !== undefined ? !!isActive : true,
+        tenantId,
         services: {
           create: serviceIds && Array.isArray(serviceIds)
             ? serviceIds.map((id: string) => ({ serviceId: id }))
@@ -82,8 +86,9 @@ export const updateCampaign = async (req: AuthenticatedRequest, res: Response): 
       isActive,
       serviceIds
     } = req.body;
+    const tenantId = req.user!.tenantId;
 
-    const existing = await prisma.campaign.findUnique({ where: { id: String(id) } });
+    const existing = await prisma.campaign.findUnique({ where: { id: String(id), tenantId } });
     if (!existing) {
       res.status(404).json({ error: 'Campaña no encontrada.' });
       return;
@@ -107,7 +112,7 @@ export const updateCampaign = async (req: AuthenticatedRequest, res: Response): 
     }
 
     const campaign = await prisma.campaign.update({
-      where: { id: String(id) },
+      where: { id: String(id), tenantId },
       data,
       include: {
         services: {
@@ -127,14 +132,15 @@ export const updateCampaign = async (req: AuthenticatedRequest, res: Response): 
 export const deleteCampaign = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
+    const tenantId = req.user!.tenantId;
 
-    const existing = await prisma.campaign.findUnique({ where: { id: String(id) } });
+    const existing = await prisma.campaign.findUnique({ where: { id: String(id), tenantId } });
     if (!existing) {
       res.status(404).json({ error: 'Campaña no encontrada.' });
       return;
     }
 
-    await prisma.campaign.delete({ where: { id: String(id) } });
+    await prisma.campaign.delete({ where: { id: String(id), tenantId } });
     res.json({ message: 'Campaña eliminada exitosamente.' });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al eliminar la campaña.' });
