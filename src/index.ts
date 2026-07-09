@@ -27,6 +27,7 @@ import whatsappRouter from './routes/whatsapp';
 import saasRouter from './routes/saas';
 import tenantRouter from './routes/tenant';
 import publicRouter from './routes/public';
+import attendanceRouter from './routes/attendance';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -66,6 +67,7 @@ app.use('/api/reports', reportsRouter);
 app.use('/api/branches', branchesRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/whatsapp', whatsappRouter);
+app.use('/api/attendance', attendanceRouter);
 
 // Basic Route for Health Check
 app.get('/api/health', (_req: Request, res: Response) => {
@@ -77,7 +79,12 @@ app.get('/api/health', (_req: Request, res: Response) => {
 });
 
 // Start Server
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-  initRetouchDaemon();
-});
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+    initRetouchDaemon();
+  });
+}
+
+export { app };
+

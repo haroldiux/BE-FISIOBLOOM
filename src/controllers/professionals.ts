@@ -5,8 +5,11 @@ import { AuthenticatedRequest } from '../middlewares/auth';
 
 export const getAll = async (_req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    // List all users, excluding passwords
+    // List all users for the current tenant, excluding passwords
     const professionals = await prisma.user.findMany({
+      where: {
+        tenantId: _req.user!.tenantId,
+      },
       select: {
         id: true,
         email: true,
@@ -44,9 +47,9 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
       return;
     }
 
-    // Check if target user exists
-    const existingUser = await prisma.user.findUnique({
-      where: { id: id as string },
+    // Check if target user exists and belongs to the same tenant
+    const existingUser = await prisma.user.findFirst({
+      where: { id: id as string, tenantId: req.user!.tenantId },
     });
 
     if (!existingUser) {
@@ -101,9 +104,9 @@ export const deleteProfessional = async (req: AuthenticatedRequest, res: Respons
   try {
     const { id } = req.params;
 
-    // Check if target user exists
-    const existingUser = await prisma.user.findUnique({
-      where: { id: id as string },
+    // Check if target user exists and belongs to the same tenant
+    const existingUser = await prisma.user.findFirst({
+      where: { id: id as string, tenantId: req.user!.tenantId },
     });
 
     if (!existingUser) {

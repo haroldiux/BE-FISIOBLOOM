@@ -6,11 +6,13 @@ import {
   getStaffReport,
   getInventoryReport,
   exportCSVReport,
+  getGeneralReport,
 } from '../controllers/reports';
 
 const router = Router();
 
 // Protect all report routes to ADMIN only
+router.get('/', requireAuth, requireRole([Role.ADMIN]), getGeneralReport);
 router.get('/financial', requireAuth, requireRole([Role.ADMIN]), getFinancialReport);
 router.get('/staff', requireAuth, requireRole([Role.ADMIN]), getStaffReport);
 router.get('/inventory', requireAuth, requireRole([Role.ADMIN]), getInventoryReport);

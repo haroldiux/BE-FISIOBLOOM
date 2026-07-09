@@ -37,6 +37,7 @@ export const createTenant = async (req: Request, res: Response): Promise<void> =
       },
       branding: {
         primaryColor: '#ec4899', // Default pink
+        palette: 'aura',         // Default palette
       },
     };
 

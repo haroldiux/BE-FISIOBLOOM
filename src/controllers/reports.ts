@@ -557,3 +557,273 @@ export const exportCSVReport = async (req: AuthenticatedRequest, res: Response):
     res.status(500).json({ error: error.message || 'Error al exportar el reporte CSV.' });
   }
 };
+
+export const getGeneralReport = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { range, startDate, endDate } = req.query;
+
+    const now = new Date();
+    let start = new Date();
+    let end = new Date();
+    let prevStart = new Date();
+    let prevEnd = new Date();
+
+    if (range === 'este_mes') {
+      start = new Date(now.getFullYear(), now.getMonth(), 1);
+      end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+      prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      prevEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+    } else if (range === 'mes_anterior') {
+      start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+      prevStart = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+      prevEnd = new Date(now.getFullYear(), now.getMonth() - 1, 0, 23, 59, 59, 999);
+    } else if (range === 'anio_actual') {
+      start = new Date(now.getFullYear(), 0, 1);
+      end = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
+      prevStart = new Date(now.getFullYear() - 1, 0, 1);
+      prevEnd = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59, 999);
+    } else {
+      // personalizado
+      start = startDate ? new Date(startDate as string) : new Date(now.getFullYear(), now.getMonth(), 1);
+      end = endDate ? new Date(endDate as string) : new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+      end.setHours(23, 59, 59, 999);
+      
+      const diff = end.getTime() - start.getTime();
+      prevStart = new Date(start.getTime() - diff - 1000);
+      prevEnd = new Date(start.getTime() - 1000);
+    }
+
+    // Run queries in parallel
+    const [
+      invoices,
+      invoicesPrev,
+      expenses,
+      expensesPrev,
+      payrolls,
+      payrollsPrev,
+      citasCount,
+      citasCountPrev,
+      activeProducts,
+      stockMovements,
+      completedApptsForTreatments,
+      sessionMovements
+    ] = await Promise.all([
+      // 1. Invoices
+      prisma.invoice.findMany({
+        where: { tenantId, status: 'PAGADO', paidAt: { gte: start, lte: end } },
+        include: { branch: { select: { name: true } } }
+      }),
+      // 2. Invoices prev
+      prisma.invoice.findMany({
+        where: { tenantId, status: 'PAGADO', paidAt: { gte: prevStart, lte: prevEnd } }
+      }),
+      // 3. Expenses
+      prisma.cashMovement.findMany({
+        where: { tenantId, type: 'EXPENSE', createdAt: { gte: start, lte: end } }
+      }),
+      // 4. Expenses prev
+      prisma.cashMovement.findMany({
+        where: { tenantId, type: 'EXPENSE', createdAt: { gte: prevStart, lte: prevEnd } }
+      }),
+      // 5. Payroll
+      prisma.payrollEntry.findMany({
+        where: { tenantId, status: 'PAID', paidAt: { gte: start, lte: end } }
+      }),
+      // 6. Payroll prev
+      prisma.payrollEntry.findMany({
+        where: { tenantId, status: 'PAID', paidAt: { gte: prevStart, lte: prevEnd } }
+      }),
+      // 7. Citas
+      prisma.appointment.count({
+        where: { tenantId, status: 'COMPLETADA', dateTime: { gte: start, lte: end } }
+      }),
+      // 8. Citas prev
+      prisma.appointment.count({
+        where: { tenantId, status: 'COMPLETADA', dateTime: { gte: prevStart, lte: prevEnd } }
+      }),
+      // 9. Active products
+      prisma.product.findMany({
+        where: { tenantId, isActive: true },
+        select: { price: true, stock: true }
+      }),
+      // 10. Stock movements in range
+      prisma.inventoryMovement.findMany({
+        where: { tenantId, createdAt: { gte: start, lte: end } },
+        include: { product: { select: { price: true } } }
+      }),
+      // 11. Completed appointments for treatments
+      prisma.appointment.findMany({
+        where: { tenantId, status: 'COMPLETADA', dateTime: { gte: start, lte: end }, serviceId: { not: null } },
+        include: { service: { select: { name: true } } }
+      }),
+      // 12. Session consumption movements for top supplies
+      prisma.inventoryMovement.findMany({
+        where: { tenantId, type: 'SESSION_CONSUMPTION', createdAt: { gte: start, lte: end } },
+        include: { product: { select: { name: true } } }
+      })
+    ]);
+
+    // KPI 1: Ingresos Netos
+    const ingresosNetos = invoices.reduce((sum, inv) => sum + inv.total, 0);
+    const ingresosNetosPrev = invoicesPrev.reduce((sum, inv) => sum + inv.total, 0);
+    const ingresosNetosDiff = ingresosNetosPrev > 0
+      ? round(((ingresosNetos - ingresosNetosPrev) / ingresosNetosPrev) * 100)
+      : (ingresosNetos > 0 ? 100 : 0);
+
+    // KPI 2: Egresos (Expenses excluding payroll-related + Payrolls)
+    const egresosGeneral = expenses.filter((e) => !e.description.includes('Pago de Nómina')).reduce((sum, e) => sum + e.amount, 0);
+    const egresosPayroll = payrolls.reduce((sum, p) => sum + p.totalPaid, 0);
+    const egresos = egresosGeneral + egresosPayroll;
+
+    const egresosGeneralPrev = expensesPrev.filter((e) => !e.description.includes('Pago de Nómina')).reduce((sum, e) => sum + e.amount, 0);
+    const egresosPayrollPrev = payrollsPrev.reduce((sum, p) => sum + p.totalPaid, 0);
+    const egresosPrevVal = egresosGeneralPrev + egresosPayrollPrev;
+    
+    const egresosDiff = egresosPrevVal > 0
+      ? round(((egresos - egresosPrevVal) / egresosPrevVal) * 100)
+      : (egresos > 0 ? 100 : 0);
+
+    // KPI 3: Citas Completadas
+    const citasCompletadas = citasCount;
+    const citasCompletadasPrev = citasCountPrev;
+    const citasCompletadasDiff = citasCompletadasPrev > 0
+      ? round(((citasCompletadas - citasCompletadasPrev) / citasCompletadasPrev) * 100)
+      : (citasCompletadas > 0 ? 100 : 0);
+
+    // KPI 4: Valor de Almacen
+    const valorAlmacen = activeProducts.reduce((sum, p) => sum + (p.stock * p.price), 0);
+    let movementsValueChange = 0;
+    for (const mov of stockMovements) {
+      if (mov.product) {
+        const val = mov.quantity * mov.product.price;
+        if (mov.type === 'STOCK_IN') {
+          movementsValueChange += val;
+        } else {
+          movementsValueChange -= val;
+        }
+      }
+    }
+    const previousValorAlmacen = valorAlmacen - movementsValueChange;
+    const valorAlmacenDiff = previousValorAlmacen > 0
+      ? round(((valorAlmacen - previousValorAlmacen) / previousValorAlmacen) * 100)
+      : 0;
+
+    // Daily Evolution
+    const evolutionMap: Record<string, number> = {};
+    if (range === 'anio_actual') {
+      const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+      months.forEach((m) => { evolutionMap[m] = 0; });
+      for (const inv of invoices) {
+        const mIdx = new Date(inv.paidAt).getMonth();
+        const mName = months[mIdx];
+        evolutionMap[mName] = (evolutionMap[mName] || 0) + inv.total;
+      }
+    } else {
+      const temp = new Date(start);
+      while (temp <= end) {
+        const dateStr = temp.toISOString().split('T')[0];
+        evolutionMap[dateStr] = 0;
+        temp.setDate(temp.getDate() + 1);
+      }
+      for (const inv of invoices) {
+        const dateStr = new Date(inv.paidAt).toISOString().split('T')[0];
+        if (evolutionMap[dateStr] !== undefined) {
+          evolutionMap[dateStr] += inv.total;
+        }
+      }
+    }
+
+    const dailyEvolution = Object.keys(evolutionMap).map((key) => {
+      let label = key;
+      if (key.includes('-')) {
+        const parts = key.split('-');
+        label = `${parts[2]}/${parts[1]}`; // DD/MM
+      }
+      return {
+        label,
+        ingresos: round(evolutionMap[key])
+      };
+    });
+
+    // Payment Methods
+    const porMetodoPago = {
+      EFECTIVO: 0,
+      TARJETA: 0,
+      TRANSFERENCIA: 0,
+      BILLETERA_VIRTUAL: 0
+    };
+    for (const inv of invoices) {
+      if (inv.paymentMethod in porMetodoPago) {
+        porMetodoPago[inv.paymentMethod as keyof typeof porMetodoPago] += inv.total;
+      }
+    }
+    const totalPayments = Object.values(porMetodoPago).reduce((sum, val) => sum + val, 0);
+    const colorMap: Record<string, string> = {
+      EFECTIVO: 'var(--primary)',
+      TARJETA: '#3b82f6',
+      TRANSFERENCIA: '#10b981',
+      BILLETERA_VIRTUAL: '#f59e0b'
+    };
+    const paymentMethods = Object.keys(porMetodoPago).map((method) => {
+      const amount = porMetodoPago[method as keyof typeof porMetodoPago];
+      const percentage = totalPayments > 0 ? round((amount / totalPayments) * 100) : 0;
+      return {
+        method,
+        amount: round(amount),
+        percentage,
+        color: colorMap[method] || '#6b7280'
+      };
+    });
+
+    // Top Treatments
+    const treatmentCounts: Record<string, number> = {};
+    for (const appt of completedApptsForTreatments) {
+      const name = appt.service?.name || 'Otro';
+      treatmentCounts[name] = (treatmentCounts[name] || 0) + 1;
+    }
+    const topTreatments = Object.keys(treatmentCounts)
+      .map((name) => ({ name, count: treatmentCounts[name] }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    // Top Supplies
+    const supplyCounts: Record<string, number> = {};
+    for (const mov of sessionMovements) {
+      const name = mov.product?.name || 'Desconocido';
+      supplyCounts[name] = (supplyCounts[name] || 0) + mov.quantity;
+    }
+    const topSupplies = Object.keys(supplyCounts)
+      .map((name) => ({ name, count: supplyCounts[name] }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    // Por Sucursal
+    const porSucursal: Record<string, number> = {};
+    for (const inv of invoices) {
+      const branchName = inv.branch?.name || 'Sede Principal';
+      porSucursal[branchName] = round((porSucursal[branchName] || 0) + inv.total);
+    }
+
+    res.json({
+      kpis: {
+        ingresosNetos: round(ingresosNetos),
+        ingresosNetosDiff,
+        egresos: round(egresos),
+        egresosDiff,
+        citasCompletadas,
+        citasCompletadasDiff,
+        valorAlmacen: round(valorAlmacen),
+        valorAlmacenDiff
+      },
+      dailyEvolution,
+      paymentMethods,
+      topTreatments,
+      topSupplies,
+      porSucursal
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al generar el reporte analítico general.' });
+  }
+};

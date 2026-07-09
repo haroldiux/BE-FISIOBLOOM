@@ -45,6 +45,7 @@ model Tenant {
   consentDocuments  ConsentDocument[]
   patientPhotos     PatientPhoto[]
   auditLogs         AuditLog[]
+  attendances       Attendance[]
 }
 
 model Branch {
@@ -104,6 +105,7 @@ model User {
   commissions     Commission[]
   payrollEntries  PayrollEntry[]
   auditLogs       AuditLog[]
+  attendances     Attendance[]
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -654,4 +656,21 @@ model AuditLog {
   createdAt DateTime @default(now())
 
   @@index([tenantId])
+}
+
+model Attendance {
+  id          String   @id @default(uuid())
+  tenantId    String   @default("seed-tenant-aura")
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  checkIn     DateTime
+  checkOut    DateTime?
+  status      String   @default("PRESENT") // PRESENT, LATE, ABSENT, JUSTIFIED
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
 }

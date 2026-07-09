@@ -5,8 +5,8 @@ import { Role } from '@prisma/client';
 
 const router = Router();
 
-// List professionals - ADMIN and RECEPTIONIST allowed
-router.get('/', requireAuth, requireRole([Role.ADMIN, Role.RECEPTIONIST]), getAll);
+// List professionals - ADMIN, RECEPTIONIST, PHYSIO and AESTHETICIAN allowed
+router.get('/', requireAuth, requireRole([Role.ADMIN, Role.RECEPTIONIST, Role.PHYSIO, Role.AESTHETICIAN]), getAll);
 
 // Update professional profile or working hours - Authenticated (internal checks for self or ADMIN)
 router.put('/:id', requireAuth, update);

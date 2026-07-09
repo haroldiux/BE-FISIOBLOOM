@@ -5,9 +5,6 @@ import { Role } from '@prisma/client';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key-12345';
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
-
 export const register = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { email, password, name, role, tenantName, tenantSlug, branchId } = req.body;
@@ -95,6 +92,8 @@ export const register = async (req: AuthenticatedRequest, res: Response): Promis
 };
 
 export const login = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key-12345';
+  const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
   try {
     const { email, password } = req.body;
 

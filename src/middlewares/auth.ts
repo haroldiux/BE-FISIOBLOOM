@@ -15,13 +15,12 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key-12345';
-
 export const requireAuth = async (
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
 ): Promise<void> => {
+  const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key-12345';
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -63,8 +62,9 @@ export const requireAuth = async (
     };
 
     next();
-  } catch (error) {
-    res.status(401).json({ error: 'Invalid or expired token.' });
+  } catch (error: any) {
+    console.error('DEBUG REQUIREAUTH ERROR:', error.message || error);
+    res.status(401).json({ error: 'Invalid or expired token.', details: error.message });
   }
 };
 

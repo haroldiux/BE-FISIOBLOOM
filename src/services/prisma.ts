@@ -88,10 +88,9 @@ const prisma = basePrisma.$extends({
           }
         }
 
-        // 2. Controlar findUnique/findUniqueOrThrow validando el resultado para evitar fugas entre tenants
         if (operation === 'findUnique' || operation === 'findUniqueOrThrow') {
           const result = await query(args) as any;
-          if (result && result.tenantId !== tenantId) {
+          if (result && result.tenantId !== undefined && result.tenantId !== tenantId) {
             if (operation === 'findUniqueOrThrow') {
               throw new Error(`Registro no encontrado en el contexto de tenant.`);
             }

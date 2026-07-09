@@ -318,14 +318,35 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
       return;
     }
 
-    // Verificar que el servicio existe
-    const service = await prisma.service.findFirst({
-      where: { id: serviceId, tenantId },
-    });
+    let finalServiceId = serviceId;
+    if (serviceId === 'general') {
+      let generalService = await prisma.service.findFirst({
+        where: { name: 'Consentimiento General', tenantId },
+      });
+      if (!generalService) {
+        generalService = await prisma.service.create({
+          data: {
+            id: `general-service-${tenantId}`,
+            name: 'Consentimiento General',
+            category: 'ESTETICA',
+            defaultDuration: 0,
+            defaultPrice: 0,
+            requiresConsent: true,
+            tenantId,
+          },
+        });
+      }
+      finalServiceId = generalService.id;
+    } else {
+      // Verificar que el servicio existe
+      const service = await prisma.service.findFirst({
+        where: { id: serviceId, tenantId },
+      });
 
-    if (!service) {
-      res.status(404).json({ error: 'Service not found.' });
-      return;
+      if (!service) {
+        res.status(404).json({ error: 'Service not found.' });
+        return;
+      }
     }
 
     // Crear el documento de consentimiento
@@ -333,7 +354,7 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
       data: {
         id: id ? String(id) : undefined,
         patientId,
-        serviceId,
+        serviceId: finalServiceId,
         signatureData,
         tenantId,
       },

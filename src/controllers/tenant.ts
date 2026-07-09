@@ -3,6 +3,23 @@ import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
 import { encrypt } from '../services/crypto';
 
+export const ALLOWED_PALETTES = [
+  'aura',
+  'bloom',
+  'ocean',
+  'sunset',
+  'berry',
+  'tropical',
+] as const;
+
+export type Palette = (typeof ALLOWED_PALETTES)[number];
+
+const DEFAULT_PALETTE: Palette = 'aura';
+
+const isAllowedPalette = (value: unknown): value is Palette =>
+  typeof value === 'string' &&
+  (ALLOWED_PALETTES as readonly string[]).includes(value);
+
 export const getSettings = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const tenantId = req.user!.tenantId;
@@ -25,14 +42,22 @@ export const getSettings = async (req: AuthenticatedRequest, res: Response): Pro
       maskedToken = '••••••••••••••••';
     }
 
+    // Asegurar que branding.palette siempre esté presente y sea un valor válido
+    const storedPalette = currentSettings.branding?.palette;
+    const safePalette: Palette = isAllowedPalette(storedPalette)
+      ? storedPalette
+      : DEFAULT_PALETTE;
+
     const settingsResponse = {
       features: currentSettings.features || {
         multiBranch: false,
         inventory: false,
         portalPaciente: false,
       },
-      branding: currentSettings.branding || {
-        primaryColor: '#ec4899',
+      branding: {
+        ...(currentSettings.branding || {}),
+        primaryColor: currentSettings.branding?.primaryColor || '#ec4899',
+        palette: safePalette,
       },
       contactInfo: currentSettings.contactInfo || {
         name: '',
@@ -62,6 +87,14 @@ export const updateSettings = async (req: AuthenticatedRequest, res: Response): 
     const tenantId = req.user!.tenantId;
     const { features, branding, contactInfo, whatsapp } = req.body;
 
+    // Validar branding.palette si se proporciona
+    if (branding && branding.palette !== undefined && !isAllowedPalette(branding.palette)) {
+      res.status(400).json({
+        error: `Invalid palette. Allowed values: ${ALLOWED_PALETTES.join(', ')}.`,
+      });
+      return;
+    }
+
     const existing = await prisma.tenant.findUnique({
       where: { id: tenantId },
     });
@@ -79,6 +112,14 @@ export const updateSettings = async (req: AuthenticatedRequest, res: Response): 
       finalApiToken = encrypt(whatsapp.apiToken);
     }
 
+    // 2. Resolver paleta final preservando los demás campos de branding
+    const incomingPalette = branding?.palette;
+    const resolvedPalette: Palette = isAllowedPalette(incomingPalette)
+      ? incomingPalette
+      : (isAllowedPalette(currentSettings.branding?.palette)
+          ? currentSettings.branding.palette
+          : DEFAULT_PALETTE);
+
     const newSettings = {
       features: {
         ...(currentSettings.features || {}),
@@ -87,6 +128,8 @@ export const updateSettings = async (req: AuthenticatedRequest, res: Response): 
       branding: {
         ...(currentSettings.branding || {}),
         ...(branding || {}),
+        // Forzar palette por encima de cualquier valor heredado o entrante
+        palette: resolvedPalette,
       },
       contactInfo: {
         name: contactInfo?.name !== undefined ? contactInfo.name : (currentSettings.contactInfo?.name || ''),
