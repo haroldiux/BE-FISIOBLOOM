@@ -417,6 +417,38 @@ export const getConsents = async (req: AuthenticatedRequest, res: Response): Pro
   }
 };
 
+export const getAllConsents = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const tenantId = req.user!.tenantId;
+
+    const consents = await prisma.consentDocument.findMany({
+      where: { tenantId },
+      include: {
+        patient: {
+          select: {
+            fullName: true,
+            phone: true,
+            email: true,
+          },
+        },
+        service: {
+          select: {
+            name: true,
+            category: true,
+          },
+        },
+      },
+      orderBy: {
+        signedAt: 'desc',
+      },
+    });
+
+    res.json(consents);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'An error occurred fetching all consent documents.' });
+  }
+};
+
 export const uploadPhoto = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const patientId = req.params.id as string;

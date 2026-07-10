@@ -798,6 +798,12 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response): Pr
       return;
     }
 
+    // Block direct transition to COMPLETADA or CANCELADA_CON_CARGO
+    if (status === 'COMPLETADA' || status === 'CANCELADA_CON_CARGO') {
+      res.status(400).json({ error: 'No se permiten actualizaciones de estado directas a COMPLETADA o CANCELADA_CON_CARGO a través de esta ruta genérica.' });
+      return;
+    }
+
     const existingAppt = await prisma.appointment.findUnique({
       where: { id: id as string, tenantId },
     });
@@ -807,11 +813,99 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response): Pr
       return;
     }
 
-    const updatedAppt = await prisma.appointment.update({
+    const previousStatus = existingAppt.status;
+    const isReversion =
+      (previousStatus === 'COMPLETADA' || previousStatus === 'CANCELADA_CON_CARGO') &&
+      (status === 'PENDIENTE' || status === 'CONFIRMADA' || status === 'CANCELADA_SIN_CARGO');
+
+    if (isReversion) {
+      await prisma.$transaction(async (tx) => {
+        // 1. Decrement used sessions and restore package status
+        const sessionDetail = await tx.sessionDetail.findUnique({
+          where: { appointmentId: id as string },
+        });
+
+        if (sessionDetail && sessionDetail.packageLineId) {
+          const line = await tx.treatmentPackageLine.findUnique({
+            where: { id: sessionDetail.packageLineId, tenantId },
+            include: { package: true },
+          });
+
+          if (line) {
+            await tx.treatmentPackageLine.update({
+              where: { id: line.id, tenantId },
+              data: { usedSessions: { decrement: 1 } },
+            });
+
+            if (line.package.status === 'COMPLETED') {
+              await tx.treatmentPackage.update({
+                where: { id: line.packageId, tenantId },
+                data: { status: 'ACTIVE' },
+              });
+            }
+          }
+        }
+
+        // 2. Delete Session Detail
+        if (sessionDetail) {
+          await tx.sessionDetail.delete({
+            where: { id: sessionDetail.id },
+          });
+        }
+
+        // 3. Cancel Commission (set to 'CANCELLED')
+        const commission = await tx.commission.findUnique({
+          where: { appointmentId: id as string },
+        });
+        if (commission) {
+          await tx.commission.update({
+            where: { id: commission.id, tenantId },
+            data: { status: 'CANCELLED' },
+          });
+        }
+
+        // 4. Restore product stock and delete inventory movements
+        const movements = await tx.inventoryMovement.findMany({
+          where: { appointmentId: id as string, type: 'SESSION_CONSUMPTION', tenantId },
+        });
+
+        for (const movement of movements) {
+          await tx.product.update({
+            where: { id: movement.productId, tenantId },
+            data: { stock: { increment: movement.quantity } },
+          });
+
+          await tx.inventoryMovement.delete({
+            where: { id: movement.id, tenantId },
+          });
+        }
+
+        // 5. Delete Retouch Schedule if PENDING
+        const retouch = await tx.retouchSchedule.findFirst({
+          where: { originalAppointmentId: id as string, tenantId },
+        });
+        if (retouch && retouch.status === 'PENDING') {
+          await tx.retouchSchedule.delete({
+            where: { id: retouch.id, tenantId },
+          });
+        }
+
+        // 6. Update appointment status
+        await tx.appointment.update({
+          where: { id: id as string, tenantId },
+          data: { status: status as AppointmentStatus },
+        });
+      });
+    } else {
+      // Normal transition update
+      await prisma.appointment.update({
+        where: { id: id as string, tenantId },
+        data: { status: status as AppointmentStatus },
+      });
+    }
+
+    const updatedAppt = await prisma.appointment.findUnique({
       where: { id: id as string, tenantId },
-      data: {
-        status: status as AppointmentStatus,
-      },
       include: {
         patient: {
           select: {

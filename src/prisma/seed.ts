@@ -2830,7 +2830,7 @@ async function main() {
   // =======================================================================
   // 15. CONSENT DOCUMENTS (5) + CLINICAL PHOTOS (3)
   // =======================================================================
-  console.log('[15/15] Seeding consent documents and photos...');
+  console.log('[15/16] Seeding consent documents and photos...');
 
   await prisma.consentDocument.upsert({
     where: { id: 'seed-consent-sofia-micro' },
@@ -2936,6 +2936,108 @@ async function main() {
     },
   });
   console.log('  5 consents + 3 photos created.');
+
+  // =======================================================================
+  // 16. ATTENDANCE (6)
+  // =======================================================================
+  console.log('[16/16] Seeding staff attendance records...');
+
+  const day2CheckIn = new Date();
+  day2CheckIn.setDate(day2CheckIn.getDate() - 2);
+  day2CheckIn.setHours(8, 45, 0, 0);
+  const day2CheckOut = new Date(day2CheckIn);
+  day2CheckOut.setHours(18, 5, 0, 0);
+
+  await prisma.attendance.upsert({
+    where: { id: 'seed-att-carlos-day2' },
+    update: {},
+    create: {
+      id: 'seed-att-carlos-day2',
+      tenantId: tenant.id,
+      userId: carlosUser.id,
+      checkIn: day2CheckIn,
+      checkOut: day2CheckOut,
+      status: 'PRESENT',
+    },
+  });
+
+  await prisma.attendance.upsert({
+    where: { id: 'seed-att-admin-day2' },
+    update: {},
+    create: {
+      id: 'seed-att-admin-day2',
+      tenantId: tenant.id,
+      userId: adminUser.id,
+      checkIn: day2CheckIn,
+      checkOut: day2CheckOut,
+      status: 'PRESENT',
+    },
+  });
+
+  const day1CheckIn = new Date();
+  day1CheckIn.setDate(day1CheckIn.getDate() - 1);
+  day1CheckIn.setHours(8, 55, 0, 0);
+  const day1CheckOut = new Date(day1CheckIn);
+  day1CheckOut.setHours(18, 2, 0, 0);
+
+  await prisma.attendance.upsert({
+    where: { id: 'seed-att-carlos-day1' },
+    update: {},
+    create: {
+      id: 'seed-att-carlos-day1',
+      tenantId: tenant.id,
+      userId: carlosUser.id,
+      checkIn: day1CheckIn,
+      checkOut: day1CheckOut,
+      status: 'PRESENT',
+    },
+  });
+
+  await prisma.attendance.upsert({
+    where: { id: 'seed-att-admin-day1' },
+    update: {},
+    create: {
+      id: 'seed-att-admin-day1',
+      tenantId: tenant.id,
+      userId: adminUser.id,
+      checkIn: day1CheckIn,
+      checkOut: day1CheckOut,
+      status: 'PRESENT',
+    },
+  });
+
+  const todayCheckIn = new Date();
+  todayCheckIn.setHours(9, 2, 0, 0);
+  const todayCheckOutAdmin = new Date(todayCheckIn);
+  todayCheckOutAdmin.setHours(17, 30, 0, 0);
+
+  await prisma.attendance.upsert({
+    where: { id: 'seed-att-carlos-today' },
+    update: {},
+    create: {
+      id: 'seed-att-carlos-today',
+      tenantId: tenant.id,
+      userId: carlosUser.id,
+      checkIn: todayCheckIn,
+      checkOut: null,
+      status: 'PRESENT',
+    },
+  });
+
+  await prisma.attendance.upsert({
+    where: { id: 'seed-att-admin-today' },
+    update: {},
+    create: {
+      id: 'seed-att-admin-today',
+      tenantId: tenant.id,
+      userId: adminUser.id,
+      checkIn: todayCheckIn,
+      checkOut: todayCheckOutAdmin,
+      status: 'PRESENT',
+    },
+  });
+
+  console.log('  6 attendance records created.');
 
   // Suppress unused variable warnings for variables only used for side effects
   void pkgLineMaria; void pkgLineAna; void patRoberto;

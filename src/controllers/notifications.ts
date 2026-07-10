@@ -4,7 +4,7 @@ import { AuthenticatedRequest } from '../middlewares/auth';
 
 export interface SystemNotification {
   id: string;
-  type: 'low_stock' | 'expiring_package' | 'overdue_retouch' | 'upcoming_retouch';
+  type: 'low_stock' | 'expiring_package' | 'overdue_retouch' | 'upcoming_retouch' | 'inactive_package';
   severity: 'critical' | 'warning' | 'info';
   title: string;
   message: string;
@@ -18,7 +18,7 @@ export const getNotifications = async (req: AuthenticatedRequest, res: Response)
   try {
     const tenantId = req.user!.tenantId;
     const now = new Date();
-    const in7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const in15Days = new Date(now.getTime() + 15 * 24 * 60 * 60 * 1000);
     const in3Days = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
 
     const [
@@ -26,6 +26,7 @@ export const getNotifications = async (req: AuthenticatedRequest, res: Response)
       expiringSoonPackages,
       overdueRetouches,
       upcomingRetouches,
+      allActivePackages,
     ] = await Promise.all([
       // Products with stock <= 5 (low stock threshold)
       prisma.product.findMany({
@@ -39,12 +40,12 @@ export const getNotifications = async (req: AuthenticatedRequest, res: Response)
         take: 20,
       }),
 
-      // Treatment packages expiring in the next 7 days
+      // Treatment packages expiring in the next 15 days
       prisma.treatmentPackage.findMany({
         where: {
           tenantId,
           status: 'ACTIVE',
-          expiresAt: { gte: now, lte: in7Days },
+          expiresAt: { gte: now, lte: in15Days },
         },
         include: {
           patient: { select: { id: true, fullName: true } },
@@ -81,6 +82,28 @@ export const getNotifications = async (req: AuthenticatedRequest, res: Response)
         },
         orderBy: { scheduledDate: 'asc' },
         take: 20,
+      }),
+
+      // Fetch active packages with lines and appointments for Inactivity check
+      prisma.treatmentPackage.findMany({
+        where: {
+          tenantId,
+          status: 'ACTIVE',
+          patient: { isActive: true },
+        },
+        include: {
+          patient: {
+            select: {
+              id: true,
+              fullName: true,
+              appointments: {
+                where: { tenantId },
+                select: { dateTime: true, status: true },
+              },
+            },
+          },
+          lines: true,
+        },
       }),
     ]);
 
@@ -148,6 +171,40 @@ export const getNotifications = async (req: AuthenticatedRequest, res: Response)
         createdAt: now.toISOString(),
         patientId: retouch.patient.id,
       });
+    }
+
+    // ── Inactive Patients alerts ───────────────────────────────────────────────
+    const thirtyDaysAgoLimit = now.getTime() - 30 * 24 * 60 * 60 * 1000;
+    for (const pkg of allActivePackages) {
+      const hasSessionsRemaining = pkg.lines.some(line => line.usedSessions < line.totalSessions);
+      if (!hasSessionsRemaining) continue;
+
+      const hasFutureAppointment = pkg.patient.appointments.some(appt => {
+        return new Date(appt.dateTime).getTime() >= now.getTime() &&
+          appt.status !== 'CANCELADA_SIN_CARGO' &&
+          appt.status !== 'CANCELADA_CON_CARGO';
+      });
+
+      if (hasFutureAppointment) continue;
+
+      const apptTimes = pkg.patient.appointments.map(appt => new Date(appt.dateTime).getTime());
+      const lastActivityTime = apptTimes.length > 0
+        ? Math.max(new Date(pkg.purchasedAt).getTime(), ...apptTimes)
+        : new Date(pkg.purchasedAt).getTime();
+
+      if (lastActivityTime < thirtyDaysAgoLimit) {
+        notifications.push({
+          id: `inactive_package_${pkg.id}`,
+          type: 'inactive_package',
+          severity: 'warning',
+          title: 'Paciente Inactivo',
+          message: `${pkg.patient.fullName} tiene sesiones pendientes en su paquete (${pkg.packageName}) pero no registra citas en los últimos 30 días.`,
+          entityId: pkg.id,
+          entityName: pkg.patient.fullName,
+          createdAt: now.toISOString(),
+          patientId: pkg.patient.id,
+        });
+      }
     }
 
     // Sort: critical first, then warning, then info
