@@ -337,6 +337,29 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
         });
       }
       finalServiceId = generalService.id;
+    } else if (serviceId === 'fallback-laser') {
+      let laserService = await prisma.service.findFirst({
+        where: { name: 'Depilación Láser', tenantId },
+      });
+      if (!laserService) {
+        laserService = await prisma.service.findFirst({
+          where: { name: { contains: 'Láser', mode: 'insensitive' }, tenantId },
+        });
+      }
+      if (!laserService) {
+        laserService = await prisma.service.create({
+          data: {
+            id: `laser-service-${tenantId}`,
+            name: 'Depilación Láser',
+            category: 'ESTETICA',
+            defaultDuration: 30,
+            defaultPrice: 150,
+            requiresConsent: true,
+            tenantId,
+          },
+        });
+      }
+      finalServiceId = laserService.id;
     } else {
       // Verificar que el servicio existe
       const service = await prisma.service.findFirst({

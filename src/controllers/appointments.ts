@@ -295,6 +295,13 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
       return;
     }
 
+    if (status && status !== existingAppt.status) {
+      if (status === 'COMPLETADA' || status === 'CANCELADA_CON_CARGO') {
+        res.status(400).json({ error: 'No se permiten actualizaciones de estado directas a COMPLETADA o CANCELADA_CON_CARGO a través de esta ruta genérica.' });
+        return;
+      }
+    }
+
     const targetProfessionalId = professionalId || existingAppt.professionalId;
     const targetDateTime = dateTime ? new Date(dateTime) : new Date(existingAppt.dateTime);
     const targetDuration = duration !== undefined ? Number(duration) : existingAppt.duration;
@@ -335,30 +342,137 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
       }
     }
 
-    const updatedAppt = await prisma.appointment.update({
-      where: { id: id as string, tenantId },
-      data: {
-        professionalId: targetProfessionalId,
-        dateTime: targetDateTime,
-        duration: targetDuration,
-        status: status || existingAppt.status,
-        cabin: targetCabin,
-      },
-      include: {
-        patient: {
-          select: {
-            id: true,
-            fullName: true,
+    const isReversion =
+      status &&
+      status !== existingAppt.status &&
+      (existingAppt.status === 'COMPLETADA' || existingAppt.status === 'CANCELADA_CON_CARGO') &&
+      (status === 'PENDIENTE' || status === 'CONFIRMADA' || status === 'CANCELADA_SIN_CARGO' || status === 'NO_ASISTIO');
+
+    let updatedAppt;
+    if (isReversion) {
+      updatedAppt = await prisma.$transaction(async (tx) => {
+        // 1. Decrement used sessions and restore package status
+        const sessionDetail = await tx.sessionDetail.findUnique({
+          where: { appointmentId: id as string },
+        });
+
+        if (sessionDetail && sessionDetail.packageLineId) {
+          const line = await tx.treatmentPackageLine.findUnique({
+            where: { id: sessionDetail.packageLineId, tenantId },
+            include: { package: true },
+          });
+
+          if (line) {
+            await tx.treatmentPackageLine.update({
+              where: { id: line.id, tenantId },
+              data: { usedSessions: { decrement: 1 } },
+            });
+
+            if (line.package.status === 'COMPLETED') {
+              await tx.treatmentPackage.update({
+                where: { id: line.packageId, tenantId },
+                data: { status: 'ACTIVE' },
+              });
+            }
+          }
+        }
+
+        // 2. Delete Session Detail
+        if (sessionDetail) {
+          await tx.sessionDetail.delete({
+            where: { id: sessionDetail.id },
+          });
+        }
+
+        // 3. Cancel Commission (set to 'CANCELLED')
+        const commission = await tx.commission.findUnique({
+          where: { appointmentId: id as string },
+        });
+        if (commission) {
+          await tx.commission.update({
+            where: { id: commission.id, tenantId },
+            data: { status: 'CANCELLED' },
+          });
+        }
+
+        // 4. Restore product stock and delete inventory movements
+        const movements = await tx.inventoryMovement.findMany({
+          where: { appointmentId: id as string, type: 'SESSION_CONSUMPTION', tenantId },
+        });
+
+        for (const movement of movements) {
+          await tx.product.update({
+            where: { id: movement.productId, tenantId },
+            data: { stock: { increment: movement.quantity } },
+          });
+
+          await tx.inventoryMovement.delete({
+            where: { id: movement.id, tenantId },
+          });
+        }
+
+        // 5. Delete Retouch Schedule if PENDING
+        const retouch = await tx.retouchSchedule.findFirst({
+          where: { originalAppointmentId: id as string, tenantId },
+        });
+        if (retouch && retouch.status === 'PENDING') {
+          await tx.retouchSchedule.delete({
+            where: { id: retouch.id, tenantId },
+          });
+        }
+
+        // 6. Update appointment
+        return tx.appointment.update({
+          where: { id: id as string, tenantId },
+          data: {
+            professionalId: targetProfessionalId,
+            dateTime: targetDateTime,
+            duration: targetDuration,
+            status: status as AppointmentStatus,
+            cabin: targetCabin,
+          },
+          include: {
+            patient: {
+              select: {
+                id: true,
+                fullName: true,
+              },
+            },
+            professional: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        });
+      });
+    } else {
+      updatedAppt = await prisma.appointment.update({
+        where: { id: id as string, tenantId },
+        data: {
+          professionalId: targetProfessionalId,
+          dateTime: targetDateTime,
+          duration: targetDuration,
+          status: status || existingAppt.status,
+          cabin: targetCabin,
+        },
+        include: {
+          patient: {
+            select: {
+              id: true,
+              fullName: true,
+            },
+          },
+          professional: {
+            select: {
+              id: true,
+              name: true,
+            },
           },
         },
-        professional: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-      },
-    });
+      });
+    }
 
     // Reschedule WhatsApp reminder
     await scheduleAppointmentReminder(updatedAppt.id, updatedAppt.dateTime);
@@ -816,7 +930,7 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response): Pr
     const previousStatus = existingAppt.status;
     const isReversion =
       (previousStatus === 'COMPLETADA' || previousStatus === 'CANCELADA_CON_CARGO') &&
-      (status === 'PENDIENTE' || status === 'CONFIRMADA' || status === 'CANCELADA_SIN_CARGO');
+      (status === 'PENDIENTE' || status === 'CONFIRMADA' || status === 'CANCELADA_SIN_CARGO' || status === 'NO_ASISTIO');
 
     if (isReversion) {
       await prisma.$transaction(async (tx) => {
