@@ -25,12 +25,70 @@ export const checkIn = async (req: AuthenticatedRequest, res: Response): Promise
       return;
     }
 
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      res.status(404).json({ error: 'Usuario no encontrado.' });
+      return;
+    }
+
+    const now = new Date();
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+
+    // 1. Check for schedule exception
+    const exception = await prisma.scheduleException.findFirst({
+      where: {
+        professionalId: userId,
+        tenantId,
+        date: {
+          gte: todayStart,
+          lte: todayEnd,
+        },
+      },
+    });
+
+    let scheduledStartTime: string | null = null;
+    let isDayOff = false;
+
+    if (exception) {
+      if (exception.isAvailable) {
+        scheduledStartTime = exception.startTime;
+      } else {
+        isDayOff = true;
+      }
+    } else {
+      // 2. No exception, use regular working hours
+      const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      const dayName = daysOfWeek[now.getDay()];
+      const workingHours = user.workingHours as any;
+      const todaySchedule = workingHours?.[dayName];
+
+      if (todaySchedule && todaySchedule.start) {
+        scheduledStartTime = todaySchedule.start;
+      } else {
+        isDayOff = true;
+      }
+    }
+
+    let status = 'PRESENT';
+    if (!isDayOff && scheduledStartTime) {
+      const [schedHour, schedMinute] = scheduledStartTime.split(':').map(Number);
+      const actualMinutes = now.getHours() * 60 + now.getMinutes();
+      const scheduledMinutes = schedHour * 60 + schedMinute;
+      if (actualMinutes > scheduledMinutes) {
+        status = 'LATE';
+      }
+    }
+
     const attendance = await prisma.attendance.create({
       data: {
         userId,
         tenantId,
-        checkIn: new Date(),
-        status: 'PRESENT',
+        checkIn: now,
+        status,
       },
     });
 

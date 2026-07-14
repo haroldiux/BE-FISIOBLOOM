@@ -584,6 +584,132 @@ describe('Módulo de Citas (Agendamiento y Colisiones)', () => {
     });
   });
 
+  describe('Pruebas de Validación de ScheduleException en Agendamiento', () => {
+    it('Debe bloquear la cita si hay una excepción del profesional para todo el día (isAvailable=false, sin horas)', async () => {
+      const patient = await prisma.patient.create({
+        data: {
+          fullName: 'Juan Exception Test',
+          phone: '12341234',
+          tenantId: testData.tenant.id,
+          branchId: testData.branch.id,
+        },
+      });
+
+      const nextMonday = new Date();
+      nextMonday.setDate(nextMonday.getDate() + ((1 + 7 - nextMonday.getDay()) % 7 || 7));
+      nextMonday.setHours(10, 0, 0, 0);
+
+      // Crear excepción de día completo para el profesional
+      await prisma.scheduleException.create({
+        data: {
+          tenantId: testData.tenant.id,
+          professionalId: testData.physio.user.id,
+          date: nextMonday,
+          isAvailable: false,
+          reason: 'Feriado o Día Libre',
+        },
+      });
+
+      const response = await request(app)
+        .post('/api/appointments')
+        .set('Authorization', `Bearer ${testData.receptionist.token}`)
+        .send({
+          patientId: patient.id,
+          professionalId: testData.physio.user.id,
+          serviceId: testData.service.id,
+          dateTime: nextMonday.toISOString(),
+          duration: 60,
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('no está disponible en este horario debido a una excepción/licencia');
+    });
+
+    it('Debe bloquear la cita si hay una excepción para un bloque de horas y la cita se solapa', async () => {
+      const patient = await prisma.patient.create({
+        data: {
+          fullName: 'Juan Exception Test 2',
+          phone: '12341234',
+          tenantId: testData.tenant.id,
+          branchId: testData.branch.id,
+        },
+      });
+
+      const nextMonday = new Date();
+      nextMonday.setDate(nextMonday.getDate() + ((1 + 7 - nextMonday.getDay()) % 7 || 7));
+      nextMonday.setHours(10, 0, 0, 0); // 10:00 AM
+
+      // Crear excepción para el bloque 09:30 - 11:30
+      await prisma.scheduleException.create({
+        data: {
+          tenantId: testData.tenant.id,
+          professionalId: testData.physio.user.id,
+          date: nextMonday,
+          isAvailable: false,
+          startTime: '09:30',
+          endTime: '11:30',
+          reason: 'Reunión Médica',
+        },
+      });
+
+      const response = await request(app)
+        .post('/api/appointments')
+        .set('Authorization', `Bearer ${testData.receptionist.token}`)
+        .send({
+          patientId: patient.id,
+          professionalId: testData.physio.user.id,
+          serviceId: testData.service.id,
+          dateTime: nextMonday.toISOString(), // 10:00 (solapa con 09:30-11:30)
+          duration: 60,
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('no está disponible en este horario debido a una excepción/licencia');
+    });
+
+    it('Debe permitir la cita si hay una excepción para un bloque de horas pero la cita no se solapa', async () => {
+      const patient = await prisma.patient.create({
+        data: {
+          fullName: 'Juan Exception Test 3',
+          phone: '12341234',
+          tenantId: testData.tenant.id,
+          branchId: testData.branch.id,
+        },
+      });
+
+      const nextMonday = new Date();
+      nextMonday.setDate(nextMonday.getDate() + ((1 + 7 - nextMonday.getDay()) % 7 || 7));
+      nextMonday.setHours(14, 0, 0, 0); // 14:00 PM
+
+      // Crear excepción para el bloque 09:30 - 11:30
+      await prisma.scheduleException.create({
+        data: {
+          tenantId: testData.tenant.id,
+          professionalId: testData.physio.user.id,
+          date: nextMonday,
+          isAvailable: false,
+          startTime: '09:30',
+          endTime: '11:30',
+          reason: 'Reunión Médica',
+        },
+      });
+
+      const response = await request(app)
+        .post('/api/appointments')
+        .set('Authorization', `Bearer ${testData.receptionist.token}`)
+        .send({
+          patientId: patient.id,
+          professionalId: testData.physio.user.id,
+          serviceId: testData.service.id,
+          dateTime: nextMonday.toISOString(), // 14:00 (no solapa con 09:30-11:30)
+          duration: 60,
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body).toHaveProperty('appointment');
+    });
+  });
+
   afterAll(async () => {
     await prisma.$disconnect();
   });

@@ -46,6 +46,8 @@ model Tenant {
   patientPhotos     PatientPhoto[]
   auditLogs         AuditLog[]
   attendances       Attendance[]
+  scheduleExceptions ScheduleException[]
+  branchStocks      BranchStock[]
 }
 
 model Branch {
@@ -64,6 +66,9 @@ model Branch {
   invoices           Invoice[]
   cashRegisters      CashRegister[]
   inventoryMovements InventoryMovement[]
+  branchStocks               BranchStock[]
+  sourceBranchMovements      InventoryMovement[] @relation("SourceBranchMovements")
+  destinationBranchMovements InventoryMovement[] @relation("DestinationBranchMovements")
 
   @@index([tenantId])
 }
@@ -106,6 +111,7 @@ model User {
   payrollEntries  PayrollEntry[]
   auditLogs       AuditLog[]
   attendances     Attendance[]
+  scheduleExceptions ScheduleException[]
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -225,12 +231,14 @@ model Product {
   name               String
   category           String              // 'TRATAMIENTO' | 'PRODUCTO'
   price              Float
+  costPrice          Float               @default(0.0)
   stock              Int                 @default(0)
   unit               String              @default("unidad") // unidad, sesión, ml, etc.
   isActive           Boolean             @default(true)
   invoiceItems       InvoiceItem[]
   consumables        ServiceConsumable[]
   inventoryMovements InventoryMovement[]
+  branchStocks       BranchStock[]
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
 
@@ -462,16 +470,17 @@ enum PayrollStatus {
 }
 
 model StaffProfile {
-  id             String   @id @default(uuid())
-  tenantId       String   @default("seed-tenant-aura")
-  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  userId         String   @unique
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  baseSalary     Float
-  commissionRate Float    // e.g. 0.10 for 10%
+  id             String       @id @default(uuid())
+  tenantId       String       @default("seed-tenant-aura")
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId         String       @unique
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  baseSalary     Float        @default(0.0)
+  commissionRate Float        @default(0.0) // e.g. 0.10 for 10%
+  contractType   ContractType @default(FIXED)
   salesTarget    Float?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
   @@index([tenantId])
 }
@@ -549,6 +558,10 @@ model InventoryMovement {
   notes         String?
   appointmentId String?
   appointment   Appointment?          @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  sourceBranchId      String?
+  sourceBranch        Branch?               @relation("SourceBranchMovements", fields: [sourceBranchId], references: [id], onDelete: SetNull)
+  destinationBranchId String?
+  destinationBranch   Branch?               @relation("DestinationBranchMovements", fields: [destinationBranchId], references: [id], onDelete: SetNull)
   createdAt     DateTime              @default(now())
 
   @@index([tenantId])
@@ -674,3 +687,48 @@ model Attendance {
   @@index([tenantId])
   @@index([tenantId, userId])
 }
+
+enum ContractType {
+  FIXED
+  COMMISSION
+  MIXED
+  FULL_TIME
+  PART_TIME
+}
+
+model ScheduleException {
+  id             String   @id @default(uuid())
+  tenantId       String   @default("seed-tenant-aura")
+  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  professionalId String
+  professional   User     @relation(fields: [professionalId], references: [id], onDelete: Cascade)
+  date           DateTime // Date of the exception
+  isAvailable    Boolean  @default(false) // true = working custom hours, false = off-duty/holiday
+  startTime      String?  // e.g. "09:00"
+  endTime        String?  // e.g. "14:00"
+  reason         String?  // e.g. "Licencia médica", "Feriado"
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, professionalId])
+}
+
+model BranchStock {
+  id        String   @id @default(uuid())
+  tenantId  String   @default("seed-tenant-aura")
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId  String
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  stock     Int      @default(0)
+  minStock  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([branchId, productId])
+  @@index([tenantId])
+}
+
+

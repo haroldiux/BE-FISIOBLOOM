@@ -60,26 +60,49 @@ export const register = async (req: AuthenticatedRequest, res: Response): Promis
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user
-    const newUser = await prisma.user.create({
-      data: {
-        email,
-        password: hashedPassword,
-        name,
-        role: role as Role,
-        tenantId,
-        branchId: branchId || null,
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        isActive: true,
-        tenantId: true,
-        branchId: true,
-        createdAt: true,
-      },
+    // Create user and staff profile
+    const newUser = await prisma.$transaction(async (tx) => {
+      const u = await tx.user.create({
+        data: {
+          email,
+          password: hashedPassword,
+          name,
+          role: role as Role,
+          tenantId,
+          branchId: branchId || null,
+        },
+      });
+
+      await tx.staffProfile.create({
+        data: {
+          tenantId,
+          userId: u.id,
+          baseSalary: req.body.baseSalary ? Number(req.body.baseSalary) : 0,
+          commissionRate: req.body.commissionRate ? Number(req.body.commissionRate) : 0,
+          contractType: req.body.contractType || 'FIXED',
+        },
+      });
+
+      return tx.user.findUnique({
+        where: { id: u.id },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+          isActive: true,
+          tenantId: true,
+          branchId: true,
+          createdAt: true,
+          staffProfile: {
+            select: {
+              contractType: true,
+              baseSalary: true,
+              commissionRate: true,
+            }
+          }
+        }
+      });
     });
 
     res.status(201).json({
@@ -180,3 +203,69 @@ export const me = async (req: AuthenticatedRequest, res: Response): Promise<void
     res.status(500).json({ error: error.message || 'An error occurred fetching user profile.' });
   }
 };
+
+export const updateProfile = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ error: 'Unauthorized.' });
+      return;
+    }
+
+    const { name, email, password } = req.body;
+
+    if (!name || !email) {
+      res.status(400).json({ error: 'El nombre y el correo electrónico son obligatorios.' });
+      return;
+    }
+
+    // Check if email already in use
+    const duplicateEmail = await prisma.user.findFirst({
+      where: {
+        email,
+        id: { not: req.user.id },
+      },
+    });
+
+    if (duplicateEmail) {
+      res.status(400).json({ error: 'El correo electrónico ya está en uso por otro usuario.' });
+      return;
+    }
+
+    const updateData: any = {
+      name,
+      email,
+    };
+
+    if (password) {
+      if (password.length < 8) {
+        res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres.' });
+        return;
+      }
+      updateData.password = await bcrypt.hash(password, 10);
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: req.user.id },
+      data: updateData,
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isActive: true,
+        tenantId: true,
+        branchId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    res.json({
+      message: 'Perfil actualizado con éxito.',
+      user: updatedUser,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el perfil.' });
+  }
+};
+

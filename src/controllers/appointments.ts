@@ -48,6 +48,61 @@ const checkWorkingHours = async (professionalId: string, dateTime: Date, duratio
   return { valid: true };
 };
 
+// Helper: Check if professional has active schedule exceptions on the appointment date/time
+const checkScheduleExceptions = async (
+  professionalId: string,
+  dateTime: Date,
+  duration: number,
+  tenantId: string
+): Promise<{ valid: boolean; error?: string }> => {
+  const startOfDay = new Date(dateTime);
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date(dateTime);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const exceptions = await prisma.scheduleException.findMany({
+    where: {
+      professionalId,
+      tenantId,
+      date: {
+        gte: startOfDay,
+        lte: endOfDay,
+      },
+    },
+  });
+
+  const apptStartMinutes = dateTime.getHours() * 60 + dateTime.getMinutes();
+  const apptEndMinutes = apptStartMinutes + duration;
+
+  for (const exception of exceptions) {
+    if (exception.isAvailable === false) {
+      if (!exception.startTime || !exception.endTime) {
+        // Blocks the whole day
+        return {
+          valid: false,
+          error: 'El profesional no está disponible en este horario debido a una excepción/licencia.',
+        };
+      } else {
+        const [excStartH, excStartM] = exception.startTime.split(':').map(Number);
+        const [excEndH, excEndM] = exception.endTime.split(':').map(Number);
+        const excStartMinutes = excStartH * 60 + excStartM;
+        const excEndMinutes = excEndH * 60 + excEndM;
+
+        // Overlap condition
+        if (apptStartMinutes < excEndMinutes && excStartMinutes < apptEndMinutes) {
+          return {
+            valid: false,
+            error: 'El profesional no está disponible en este horario debido a una excepción/licencia.',
+          };
+        }
+      }
+    }
+  }
+
+  return { valid: true };
+};
+
 // Helper: Check if professional has overlapping appointments (active status: PENDIENTE, CONFIRMADA, COMPLETADA)
 const checkProfessionalCollision = async (
   professionalId: string,
@@ -224,6 +279,13 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
       return;
     }
 
+    // 1.5 Check schedule exceptions
+    const exceptionCheck = await checkScheduleExceptions(professionalId, apptDate, Number(duration), tenantId);
+    if (!exceptionCheck.valid) {
+      res.status(400).json({ error: exceptionCheck.error });
+      return;
+    }
+
     // 2. Check for professional collision
     const professionalCollision = await checkProfessionalCollision(professionalId, apptDate, Number(duration), tenantId);
     if (professionalCollision) {
@@ -312,6 +374,13 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
       const scheduleCheck = await checkWorkingHours(targetProfessionalId, targetDateTime, targetDuration, tenantId);
       if (!scheduleCheck.valid) {
         res.status(400).json({ error: scheduleCheck.error });
+        return;
+      }
+
+      // Check schedule exceptions
+      const exceptionCheck = await checkScheduleExceptions(targetProfessionalId, targetDateTime, targetDuration, tenantId);
+      if (!exceptionCheck.valid) {
+        res.status(400).json({ error: exceptionCheck.error });
         return;
       }
 
@@ -886,7 +955,7 @@ export const updateRetouch = async (req: AuthenticatedRequest, res: Response): P
     }
 
     const updated = await prisma.retouchSchedule.update({
-      where: { id: String(id), tenantId },
+      where: { id: String(id) },
       data: {
         ...(status !== undefined && { status }),
         ...(retouchAppointmentId !== undefined && { retouchAppointmentId }),

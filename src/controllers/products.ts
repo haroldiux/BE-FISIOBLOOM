@@ -250,3 +250,171 @@ export const adjustStock = async (req: AuthenticatedRequest, res: Response): Pro
     }
   }
 };
+
+export const getBranchStock = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { branchId, productId } = req.query;
+
+    const where: any = { tenantId };
+    if (branchId) {
+      where.branchId = String(branchId);
+    }
+    if (productId) {
+      where.productId = String(productId);
+    }
+
+    const branchStocks = await prisma.branchStock.findMany({
+      where,
+      include: {
+        product: true,
+        branch: true,
+      },
+      orderBy: {
+        branch: { name: 'asc' },
+      },
+    });
+
+    res.json(branchStocks);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error fetching branch stock.' });
+  }
+};
+
+export const transferStock = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const tenantId = req.user!.tenantId;
+    const { productId, sourceBranchId, destinationBranchId, quantity } = req.body;
+
+    if (!productId || !sourceBranchId || !destinationBranchId || quantity === undefined) {
+      res.status(400).json({ error: 'productId, sourceBranchId, destinationBranchId, and quantity are required.' });
+      return;
+    }
+
+    const qty = Number(quantity);
+    if (isNaN(qty) || qty <= 0) {
+      res.status(400).json({ error: 'quantity must be a positive number.' });
+      return;
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Fetch branches to get names and verify existence
+      const sourceBranch = await tx.branch.findFirst({
+        where: { id: sourceBranchId, tenantId },
+      });
+      const destinationBranch = await tx.branch.findFirst({
+        where: { id: destinationBranchId, tenantId },
+      });
+
+      if (!sourceBranch || !destinationBranch) {
+        throw new Error('BRANCH_NOT_FOUND');
+      }
+
+      // 2. Check source BranchStock
+      const sourceStock = await tx.branchStock.findUnique({
+        where: {
+          branchId_productId: {
+            branchId: sourceBranchId,
+            productId: productId,
+          },
+        },
+      });
+
+      if (!sourceStock || sourceStock.stock < qty) {
+        throw new Error('INSUFFICIENT_STOCK');
+      }
+
+      // 3. Decrement source BranchStock
+      const updatedSourceStock = await tx.branchStock.update({
+        where: {
+          branchId_productId: {
+            branchId: sourceBranchId,
+            productId: productId,
+          },
+        },
+        data: {
+          stock: { decrement: qty },
+        },
+      });
+
+      // 4. Increment destination BranchStock (using upsert)
+      const updatedDestStock = await tx.branchStock.upsert({
+        where: {
+          branchId_productId: {
+            branchId: destinationBranchId,
+            productId: productId,
+          },
+        },
+        create: {
+          tenantId,
+          branchId: destinationBranchId,
+          productId: productId,
+          stock: qty,
+        },
+        update: {
+          stock: { increment: qty },
+        },
+      });
+
+      // 5. Decrement global Product.stock at source, increment at destination
+      await tx.product.update({
+        where: { id: productId, tenantId },
+        data: {
+          stock: { decrement: qty },
+        },
+      });
+
+      const updatedProduct = await tx.product.update({
+        where: { id: productId, tenantId },
+        data: {
+          stock: { increment: qty },
+        },
+      });
+
+      // 6. Create inventory movement logs
+      const sourceMovement = await tx.inventoryMovement.create({
+        data: {
+          tenantId,
+          branchId: sourceBranchId,
+          productId,
+          type: 'STOCK_OUT',
+          quantity: qty,
+          sourceBranchId,
+          destinationBranchId,
+          notes: `Transfer to ${destinationBranch.name}`,
+        },
+      });
+
+      const destinationMovement = await tx.inventoryMovement.create({
+        data: {
+          tenantId,
+          branchId: destinationBranchId,
+          productId,
+          type: 'STOCK_IN',
+          quantity: qty,
+          sourceBranchId,
+          destinationBranchId,
+          notes: `Transfer from ${sourceBranch.name}`,
+        },
+      });
+
+      return {
+        sourceStock: updatedSourceStock,
+        destinationStock: updatedDestStock,
+        product: updatedProduct,
+        sourceMovement,
+        destinationMovement,
+      };
+    });
+
+    res.json({ message: 'Stock transferred successfully.', ...result });
+  } catch (error: any) {
+    if (error.message === 'BRANCH_NOT_FOUND') {
+      res.status(400).json({ error: 'Source or destination branch not found.' });
+    } else if (error.message === 'INSUFFICIENT_STOCK') {
+      res.status(400).json({ error: 'El stock en la sucursal de origen es insuficiente.' });
+    } else {
+      res.status(500).json({ error: error.message || 'Error processing stock transfer.' });
+    }
+  }
+};

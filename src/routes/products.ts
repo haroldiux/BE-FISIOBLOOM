@@ -11,6 +11,12 @@ router.use(requireAuth);
 // GET /api/products/movements
 router.get('/movements', productsController.getMovements);
 
+// GET /api/products/branch-stock
+router.get('/branch-stock', productsController.getBranchStock);
+
+// POST /api/products/transfer
+router.post('/transfer', productsController.transferStock);
+
 // POST /api/products/:id/adjust-stock — ADMIN only
 router.post('/:id/adjust-stock', requireRole([Role.ADMIN]), productsController.adjustStock);
 

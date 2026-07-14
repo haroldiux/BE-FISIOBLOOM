@@ -402,29 +402,30 @@ async function main() {
   console.log('[5/15] Seeding products...');
 
   const products = [
-    { id: 'prod-1',  name: 'Gel Conductor Ultrasonido',  price: 25, stock: 50,  unit: 'ml' },
-    { id: 'prod-2',  name: 'Crema Hidratante Aura',      price: 45, stock: 30,  unit: 'unidad' },
-    { id: 'prod-3',  name: 'Agujas Microblading',        price: 5,  stock: 120, unit: 'unidad' },
-    { id: 'prod-4',  name: 'Aceite Masajes',              price: 35, stock: 15,  unit: 'ml' },
-    { id: 'prod-5',  name: 'Protector Solar FPS 50',      price: 35, stock: 2,   unit: 'unidad' },
-    { id: 'prod-6',  name: 'Serum Acido Hialuronico',    price: 55, stock: 8,   unit: 'unidad' },
-    { id: 'prod-7',  name: 'Toallas Desechables',         price: 3,  stock: 200, unit: 'unidad' },
-    { id: 'prod-8',  name: 'Guantes Nitrilo',             price: 12, stock: 3,   unit: 'unidad' },
-    { id: 'prod-9',  name: 'Mascarilla Colageno',         price: 25, stock: 40,  unit: 'unidad' },
-    { id: 'prod-10', name: 'Banda Elastica',              price: 18, stock: 15,  unit: 'unidad' },
-    { id: 'prod-11', name: 'Gel Refrescante Post-Laser',  price: 30, stock: 22,  unit: 'unidad' },
-    { id: 'prod-12', name: 'Ampollas Vitamina C',         price: 40, stock: 10,  unit: 'unidad' },
+    { id: 'prod-1',  name: 'Gel Conductor Ultrasonido',  price: 25, costPrice: 10.0, stock: 50,  unit: 'ml' },
+    { id: 'prod-2',  name: 'Crema Hidratante Aura',      price: 45, costPrice: 20.0, stock: 30,  unit: 'unidad' },
+    { id: 'prod-3',  name: 'Agujas Microblading',        price: 5,  costPrice: 1.5,  stock: 120, unit: 'unidad' },
+    { id: 'prod-4',  name: 'Aceite Masajes',              price: 35, costPrice: 15.0, stock: 15,  unit: 'ml' },
+    { id: 'prod-5',  name: 'Protector Solar FPS 50',      price: 35, costPrice: 17.5, stock: 2,   unit: 'unidad' },
+    { id: 'prod-6',  name: 'Serum Acido Hialuronico',    price: 55, costPrice: 25.0, stock: 8,   unit: 'unidad' },
+    { id: 'prod-7',  name: 'Toallas Desechables',         price: 3,  costPrice: 1.0,  stock: 200, unit: 'unidad' },
+    { id: 'prod-8',  name: 'Guantes Nitrilo',             price: 12, costPrice: 5.0,  stock: 3,   unit: 'unidad' },
+    { id: 'prod-9',  name: 'Mascarilla Colageno',         price: 25, costPrice: 10.0, stock: 40,  unit: 'unidad' },
+    { id: 'prod-10', name: 'Banda Elastica',              price: 18, costPrice: 7.0,  stock: 15,  unit: 'unidad' },
+    { id: 'prod-11', name: 'Gel Refrescante Post-Laser',  price: 30, costPrice: 12.0, stock: 22,  unit: 'unidad' },
+    { id: 'prod-12', name: 'Ampollas Vitamina C',         price: 40, costPrice: 18.0, stock: 10,  unit: 'unidad' },
   ];
 
   for (const prod of products) {
     await prisma.product.upsert({
       where: { id: prod.id },
-      update: { name: prod.name, price: prod.price, stock: prod.stock, unit: prod.unit, isActive: true },
+      update: { name: prod.name, price: prod.price, costPrice: prod.costPrice, stock: prod.stock, unit: prod.unit, isActive: true },
       create: {
         id: prod.id,
         name: prod.name,
         category: 'PRODUCTO',
         price: prod.price,
+        costPrice: prod.costPrice,
         stock: prod.stock,
         unit: prod.unit,
         isActive: true,
@@ -433,6 +434,30 @@ async function main() {
     });
   }
   console.log('  12 products created.');
+
+  console.log('[5.1/15] Seeding BranchStock entries for default branch...');
+  for (const prod of products) {
+    await prisma.branchStock.upsert({
+      where: {
+        branchId_productId: {
+          branchId: 'seed-branch-main',
+          productId: prod.id,
+        },
+      },
+      update: {
+        stock: prod.stock,
+        tenantId: tenant.id,
+      },
+      create: {
+        branchId: 'seed-branch-main',
+        productId: prod.id,
+        stock: prod.stock,
+        minStock: 5,
+        tenantId: tenant.id,
+      },
+    });
+  }
+  console.log('  BranchStock entries created/updated.');
 
   // =======================================================================
   // 6. SERVICE CONSUMABLES (9)
