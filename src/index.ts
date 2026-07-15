@@ -28,6 +28,7 @@ import saasRouter from './routes/saas';
 import tenantRouter from './routes/tenant';
 import publicRouter from './routes/public';
 import attendanceRouter from './routes/attendance';
+import onboardingRouter from './routes/onboarding';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -68,6 +69,7 @@ app.use('/api/branches', branchesRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/whatsapp', whatsappRouter);
 app.use('/api/attendance', attendanceRouter);
+app.use('/api/onboarding', onboardingRouter);
 
 // Basic Route for Health Check
 app.get('/api/health', (_req: Request, res: Response) => {

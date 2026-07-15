@@ -112,6 +112,7 @@ model User {
   auditLogs       AuditLog[]
   attendances     Attendance[]
   scheduleExceptions ScheduleException[]
+  onboardingProgress OnboardingProgress?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -731,4 +732,15 @@ model BranchStock {
   @@index([tenantId])
 }
 
-
+model OnboardingProgress {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         String
+  currentPhase Int      @default(0)
+  currentStep  Int      @default(0)
+  completed    Boolean  @default(false)
+  dismissed    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
