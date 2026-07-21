@@ -73,8 +73,13 @@ export const checkIn = async (req: AuthenticatedRequest, res: Response): Promise
       }
     }
 
+    if (isDayOff) {
+      res.status(400).json({ error: 'No tienes turno programado para hoy (Día libre).' });
+      return;
+    }
+
     let status = 'PRESENT';
-    if (!isDayOff && scheduledStartTime) {
+    if (scheduledStartTime) {
       const [schedHour, schedMinute] = scheduledStartTime.split(':').map(Number);
       const actualMinutes = now.getHours() * 60 + now.getMinutes();
       const scheduledMinutes = schedHour * 60 + schedMinute;
@@ -179,11 +184,17 @@ export const getAttendanceHistory = async (req: AuthenticatedRequest, res: Respo
       return;
     }
 
+    const whereClause: any = {
+      tenantId,
+      checkIn: { gte: start, lte: end },
+    };
+
+    if (!['ADMIN', 'SUPER_ADMIN'].includes(req.user!.role)) {
+      whereClause.userId = req.user!.id;
+    }
+
     const history = await prisma.attendance.findMany({
-      where: {
-        tenantId,
-        checkIn: { gte: start, lte: end },
-      },
+      where: whereClause,
       include: {
         user: {
           select: {

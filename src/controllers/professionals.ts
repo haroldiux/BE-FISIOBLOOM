@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import bcrypt from 'bcrypt';
 import { Role } from '@prisma/client';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
@@ -34,7 +35,20 @@ export const getAll = async (_req: AuthenticatedRequest, res: Response): Promise
       },
     });
 
-    res.json(professionals);
+    const isPrivileged = ['ADMIN', 'SUPER_ADMIN'].includes(_req.user?.role || '');
+
+    const sanitizedProfessionals = professionals.map((prof) => {
+      if (!isPrivileged && prof.staffProfile) {
+        const { baseSalary, commissionRate, salesTarget, ...restStaff } = prof.staffProfile as any;
+        return {
+          ...prof,
+          staffProfile: restStaff,
+        };
+      }
+      return prof;
+    });
+
+    res.json(sanitizedProfessionals);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'An error occurred fetching professionals.' });
   }
@@ -334,4 +348,140 @@ export const deleteException = async (req: AuthenticatedRequest, res: Response):
     res.status(500).json({ error: error.message || 'Error deleting schedule exception.' });
   }
 };
+
+export const create = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { name, email, password, role, workingHours, baseSalary, commissionRate, contractType } = req.body;
+    const tenantId = req.user!.tenantId;
+
+    if (!name || !email || !password) {
+      res.status(400).json({ error: 'name, email, and password are required.' });
+      return;
+    }
+
+    const existingUser = await prisma.user.findFirst({
+      where: { email, tenantId }
+    });
+
+    if (existingUser) {
+      res.status(400).json({ error: 'Un usuario con este email ya existe en esta clínica.' });
+      return;
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = await prisma.user.create({
+      data: {
+        tenantId,
+        name,
+        email,
+        password: hashedPassword,
+        role: (role as Role) || Role.PHYSIO,
+        workingHours: workingHours || undefined,
+        isActive: true,
+        ...((baseSalary !== undefined || commissionRate !== undefined || contractType) && {
+          staffProfile: {
+            create: {
+              tenantId,
+              baseSalary: baseSalary ? Number(baseSalary) : 0,
+              commissionRate: commissionRate ? Number(commissionRate) : 0,
+              contractType: contractType || 'FIXED'
+            }
+          }
+        })
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isActive: true,
+        workingHours: true,
+        createdAt: true,
+        staffProfile: true
+      }
+    });
+
+    res.status(201).json({ message: 'Professional created successfully.', user: newUser });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'An error occurred creating professional.' });
+  }
+};
+
+export const getById = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user!.tenantId;
+
+    const professional = await prisma.user.findFirst({
+      where: { id: String(id), tenantId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isActive: true,
+        workingHours: true,
+        createdAt: true,
+        updatedAt: true,
+        scheduleExceptions: true,
+        staffProfile: {
+          select: {
+            contractType: true,
+            baseSalary: true,
+            commissionRate: true,
+            salesTarget: true,
+          }
+        }
+      }
+    });
+
+    if (!professional) {
+      res.status(404).json({ error: 'Professional not found.' });
+      return;
+    }
+
+    const isPrivileged = ['ADMIN', 'SUPER_ADMIN'].includes(req.user?.role || '');
+    if (!isPrivileged && professional.staffProfile) {
+      const { baseSalary, commissionRate, salesTarget, ...restStaff } = professional.staffProfile as any;
+      professional.staffProfile = restStaff;
+    }
+
+    res.json(professional);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'An error occurred fetching professional.' });
+  }
+};
+
+export const reactivateProfessional = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user!.tenantId;
+
+    const existingUser = await prisma.user.findFirst({
+      where: { id: String(id), tenantId }
+    });
+
+    if (!existingUser) {
+      res.status(404).json({ error: 'Professional not found.' });
+      return;
+    }
+
+    const reactivatedUser = await prisma.user.update({
+      where: { id: String(id) },
+      data: { isActive: true },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        isActive: true,
+      }
+    });
+
+    res.json({ message: 'Professional reactivated successfully.', user: reactivatedUser });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'An error occurred during reactivation.' });
+  }
+};
+
 

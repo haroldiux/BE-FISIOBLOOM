@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { getAll, create, getById, update, deletePatient, signConsent, getConsents, getAllConsents, uploadPhoto, getPhotos } from '../controllers/patients';
+import { getAll, create, getById, update, deletePatient, uploadPhoto, getPhotos } from '../controllers/patients';
+import { signConsent, getConsents, getAllConsents } from '../controllers/consents';
 import { getPatientPackages } from '../controllers/packages';
 import { requireAuth, requireRole } from '../middlewares/auth';
 import { Role } from '@prisma/client';

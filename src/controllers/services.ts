@@ -81,11 +81,13 @@ export const getAllServices = async (req: AuthenticatedRequest, res: Response): 
 
 export const createService = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { name, category, treatmentType, defaultDuration, defaultPrice, retouchConfig, requiresConsent, contraindications } = req.body;
+    const { name, category, treatmentType, defaultDuration, defaultPrice, price, retouchConfig, requiresConsent, contraindications } = req.body;
     const tenantId = req.user!.tenantId;
 
-    if (!name || !category || defaultPrice === undefined) {
-      res.status(400).json({ error: 'name, category, and defaultPrice are required.' });
+    const resolvedPrice = defaultPrice !== undefined ? defaultPrice : price;
+
+    if (!name || !category || resolvedPrice === undefined) {
+      res.status(400).json({ error: 'name, category, and defaultPrice (or price) are required.' });
       return;
     }
 
@@ -95,7 +97,7 @@ export const createService = async (req: AuthenticatedRequest, res: Response): P
         category: category as ServiceCategory,
         treatmentType: (treatmentType as TreatmentType) || TreatmentType.SINGLE_SESSION,
         defaultDuration: defaultDuration !== undefined ? Number(defaultDuration) : 60,
-        defaultPrice: Number(defaultPrice),
+        defaultPrice: Number(resolvedPrice),
         retouchConfig: retouchConfig || undefined,
         requiresConsent: !!requiresConsent,
         contraindications: contraindications || undefined,
@@ -119,7 +121,7 @@ export const createService = async (req: AuthenticatedRequest, res: Response): P
 export const updateService = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const { name, category, treatmentType, defaultDuration, defaultPrice, retouchConfig, requiresConsent, contraindications, isActive } = req.body;
+    const { name, category, treatmentType, defaultDuration, defaultPrice, price, retouchConfig, requiresConsent, contraindications, isActive } = req.body;
     const tenantId = req.user!.tenantId;
 
     const existing = await prisma.service.findFirst({ where: { id: String(id), tenantId } });
@@ -128,6 +130,8 @@ export const updateService = async (req: AuthenticatedRequest, res: Response): P
       return;
     }
 
+    const resolvedPrice = defaultPrice !== undefined ? defaultPrice : price;
+
     const service = await prisma.service.update({
       where: { id: String(id), tenantId },
       data: {
@@ -135,7 +139,7 @@ export const updateService = async (req: AuthenticatedRequest, res: Response): P
         ...(category !== undefined && { category: category as ServiceCategory }),
         ...(treatmentType !== undefined && { treatmentType: treatmentType as TreatmentType }),
         ...(defaultDuration !== undefined && { defaultDuration: Number(defaultDuration) }),
-        ...(defaultPrice !== undefined && { defaultPrice: Number(defaultPrice) }),
+        ...(resolvedPrice !== undefined && { defaultPrice: Number(resolvedPrice) }),
         ...(retouchConfig !== undefined && { retouchConfig }),
         ...(requiresConsent !== undefined && { requiresConsent: !!requiresConsent }),
         ...(contraindications !== undefined && { contraindications }),

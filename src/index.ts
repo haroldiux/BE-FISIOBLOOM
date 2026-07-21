@@ -29,6 +29,7 @@ import tenantRouter from './routes/tenant';
 import publicRouter from './routes/public';
 import attendanceRouter from './routes/attendance';
 import onboardingRouter from './routes/onboarding';
+import usersRouter from './routes/users';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -36,6 +37,15 @@ const PORT = process.env.PORT || 5000;
 // Middlewares
 app.use(cors());
 app.use(express.json());
+
+// Trap malformed JSON syntax errors (Bug 18)
+app.use((err: any, _req: Request, res: Response, next: any) => {
+  if (err instanceof SyntaxError && 'body' in err) {
+    res.status(400).json({ error: 'Invalid JSON payload' });
+    return;
+  }
+  next(err);
+});
 
 // Serve uploaded files statically (before tenant scoping)
 app.use('/uploads', express.static(path.join(__dirname, '../../uploads')));
@@ -53,6 +63,7 @@ app.use('/api/public', publicRouter);
 
 // Routes
 app.use('/api/auth', authRouter);
+app.use('/api/users', usersRouter);
 app.use('/api/professionals', professionalsRouter);
 app.use('/api/patients', patientsRouter);
 app.use('/api/packages', packagesRouter);

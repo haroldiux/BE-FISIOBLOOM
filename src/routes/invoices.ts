@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { requireAuth } from '../middlewares/auth';
+import { requireAuth, requireRole } from '../middlewares/auth';
+import { Role } from '@prisma/client';
 import * as invoicesController from '../controllers/invoices';
 
 const router = Router();
@@ -17,6 +18,12 @@ router.get('/', invoicesController.getAll);
 router.get('/:id', invoicesController.getById);
 
 // POST /api/invoices
-router.post('/', invoicesController.create);
+router.post('/', requireRole([Role.RECEPTIONIST, Role.ADMIN, Role.SUPER_ADMIN]), invoicesController.create);
+
+// PUT /api/invoices/:id
+router.put('/:id', requireRole([Role.RECEPTIONIST, Role.ADMIN, Role.SUPER_ADMIN]), invoicesController.updateInvoice);
+
+// DELETE /api/invoices/:id (Void invoice)
+router.delete('/:id', requireRole([Role.ADMIN, Role.SUPER_ADMIN]), invoicesController.voidInvoice);
 
 export default router;

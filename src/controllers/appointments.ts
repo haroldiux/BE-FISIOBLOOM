@@ -1,8 +1,10 @@
 import { Response } from 'express';
-import { AppointmentStatus } from '@prisma/client';
+import { AppointmentStatus, Role } from '@prisma/client';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
 import { scheduleAppointmentReminder } from '../services/reminderQueue';
+import { normalizeToBoliviaTime, validateAppointmentDate, validateAppointmentStatus } from '../services/appointment.service';
+
 
 // Helper: Check if appointment fits in professional's working hours
 const checkWorkingHours = async (professionalId: string, dateTime: Date, duration: number, tenantId: string): Promise<{ valid: boolean; error?: string }> => {
@@ -183,6 +185,8 @@ export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<
 
     if (professionalId) {
       whereClause.professionalId = professionalId as string;
+    } else if (req.user && (req.user.role === Role.PHYSIO || req.user.role === Role.AESTHETICIAN)) {
+      whereClause.professionalId = req.user.id;
     }
 
     if (patientId) {
@@ -235,10 +239,22 @@ export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<
 export const create = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const tenantId = req.user!.tenantId;
-    const { id, patientId, professionalId, dateTime, duration, status, cabin } = req.body;
+    const { id, patientId, professionalId, serviceId, dateTime, duration, status, cabin } = req.body;
 
     if (!patientId || !professionalId || !dateTime || !duration) {
       res.status(400).json({ error: 'patientId, professionalId, dateTime, and duration are required.' });
+      return;
+    }
+
+    if (status && !validateAppointmentStatus(status)) {
+      res.status(400).json({ error: `Estado de cita inválido. Valores permitidos: ${Object.values(AppointmentStatus).join(', ')}` });
+      return;
+    }
+
+    const apptDate = normalizeToBoliviaTime(dateTime);
+    const dateCheck = validateAppointmentDate(apptDate);
+    if (!dateCheck.valid) {
+      res.status(400).json({ error: dateCheck.error });
       return;
     }
 
@@ -259,6 +275,7 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
               name: true,
             },
           },
+          service: true,
         },
       });
       if (existingAppointment) {
@@ -269,8 +286,6 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
         return;
       }
     }
-
-    const apptDate = new Date(dateTime);
 
     // 1. Check working hours availability
     const scheduleCheck = await checkWorkingHours(professionalId, apptDate, Number(duration), tenantId);
@@ -309,9 +324,10 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
         tenantId,
         patientId,
         professionalId,
+        serviceId: serviceId || null,
         dateTime: apptDate,
         duration: Number(duration),
-        status: status || AppointmentStatus.PENDIENTE,
+        status: (status as AppointmentStatus) || AppointmentStatus.PENDIENTE,
         cabin: cabin || null,
       },
       include: {
@@ -327,6 +343,7 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
             name: true,
           },
         },
+        service: true,
       },
     });
 
@@ -566,6 +583,11 @@ export const deleteAppointment = async (req: AuthenticatedRequest, res: Response
 
     if (!existingAppt) {
       res.status(404).json({ error: 'Appointment not found.' });
+      return;
+    }
+
+    if (existingAppt.professionalId !== req.user!.id && !['ADMIN', 'SUPER_ADMIN'].includes(req.user!.role)) {
+      res.status(403).json({ error: 'You can only delete your own appointments' });
       return;
     }
 

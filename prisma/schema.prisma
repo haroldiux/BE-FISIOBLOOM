@@ -52,7 +52,7 @@ model Tenant {
 
 model Branch {
   id                 String              @id @default(uuid())
-  tenantId           String              @default("seed-tenant-aura")
+  tenantId           String
   tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name               String
   address            String?
@@ -92,11 +92,11 @@ enum AppointmentStatus {
 
 model User {
   id              String         @id @default(uuid())
-  tenantId        String         @default("seed-tenant-aura")
+  tenantId        String
   tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId        String?
   branch          Branch?        @relation(fields: [branchId], references: [id], onDelete: SetNull)
-  email           String         @unique
+  email           String
   password        String
   name            String
   role            Role           @default(PHYSIO)
@@ -116,13 +116,14 @@ model User {
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
+  @@unique([email, tenantId])
   @@index([tenantId])
   @@index([tenantId, branchId])
 }
 
 model Patient {
   id                String             @id @default(uuid())
-  tenantId          String             @default("seed-tenant-aura")
+  tenantId          String
   tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId          String?
   branch            Branch?            @relation(fields: [branchId], references: [id], onDelete: SetNull)
@@ -147,7 +148,7 @@ model Patient {
 
 model TreatmentPackage {
   id          String                 @id @default(uuid())
-  tenantId    String                 @default("seed-tenant-aura")
+  tenantId    String
   tenant      Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   patientId   String
   patient     Patient                @relation(fields: [patientId], references: [id], onDelete: Cascade)
@@ -164,7 +165,7 @@ model TreatmentPackage {
 
 model TreatmentPackageLine {
   id             String          @id @default(uuid())
-  tenantId       String          @default("seed-tenant-aura")
+  tenantId       String
   tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   packageId      String
   package        TreatmentPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
@@ -182,7 +183,7 @@ model TreatmentPackageLine {
 
 model Appointment {
   id                 String              @id @default(uuid())
-  tenantId           String              @default("seed-tenant-aura")
+  tenantId           String
   tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId           String?
   branch             Branch?             @relation(fields: [branchId], references: [id], onDelete: SetNull)
@@ -211,7 +212,7 @@ model Appointment {
 
 model SessionDetail {
   id             String                @id @default(uuid())
-  tenantId       String                @default("seed-tenant-aura")
+  tenantId       String
   tenant         Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   appointmentId  String                @unique
   appointment    Appointment           @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
@@ -227,7 +228,7 @@ model SessionDetail {
 
 model Product {
   id                 String              @id @default(uuid())
-  tenantId           String              @default("seed-tenant-aura")
+  tenantId           String
   tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name               String
   category           String              // 'TRATAMIENTO' | 'PRODUCTO'
@@ -261,7 +262,7 @@ enum InvoiceStatus {
 
 model Invoice {
   id            String        @id @default(uuid())
-  tenantId      String        @default("seed-tenant-aura")
+  tenantId      String
   tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId      String?
   branch        Branch?       @relation(fields: [branchId], references: [id], onDelete: SetNull)
@@ -289,7 +290,7 @@ model Invoice {
 
 model InvoiceItem {
   id          String   @id @default(uuid())
-  tenantId    String   @default("seed-tenant-aura")
+  tenantId    String
   tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   invoiceId   String
   invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -319,7 +320,7 @@ enum TreatmentType {
 
 model Service {
   id                String                 @id @default(uuid())
-  tenantId          String                 @default("seed-tenant-aura")
+  tenantId          String
   tenant            Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name              String
   category          ServiceCategory
@@ -345,7 +346,7 @@ model Service {
 
 model PackageTemplate {
   id           String                 @id @default(uuid())
-  tenantId     String                 @default("seed-tenant-aura")
+  tenantId     String
   tenant       Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name         String
   description  String?
@@ -361,7 +362,7 @@ model PackageTemplate {
 
 model PackageTemplateLine {
   id         String          @id @default(uuid())
-  tenantId   String          @default("seed-tenant-aura")
+  tenantId   String
   tenant     Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   templateId String
   template   PackageTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
@@ -384,7 +385,7 @@ enum RetouchStatus {
 
 model RetouchSchedule {
   id                    String        @id @default(uuid())
-  tenantId              String        @default("seed-tenant-aura")
+  tenantId              String
   tenant                Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   patientId             String
   patient               Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
@@ -406,7 +407,7 @@ model RetouchSchedule {
 
 model CashRegister {
   id              String         @id @default(uuid())
-  tenantId        String         @default("seed-tenant-aura")
+  tenantId        String
   tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId        String?
   branch          Branch?        @relation(fields: [branchId], references: [id], onDelete: SetNull)
@@ -443,7 +444,7 @@ enum MovementType {
 
 model CashMovement {
   id             String       @id @default(uuid())
-  tenantId       String       @default("seed-tenant-aura")
+  tenantId       String
   tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   cashRegisterId String
   cashRegister   CashRegister @relation(fields: [cashRegisterId], references: [id], onDelete: Cascade)
@@ -472,7 +473,7 @@ enum PayrollStatus {
 
 model StaffProfile {
   id             String       @id @default(uuid())
-  tenantId       String       @default("seed-tenant-aura")
+  tenantId       String
   tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   userId         String       @unique
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -488,7 +489,7 @@ model StaffProfile {
 
 model Commission {
   id            String           @id @default(uuid())
-  tenantId      String           @default("seed-tenant-aura")
+  tenantId      String
   tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   staffId       String
   staff         User             @relation(fields: [staffId], references: [id], onDelete: Cascade)
@@ -506,7 +507,7 @@ model Commission {
 
 model PayrollEntry {
   id                String        @id @default(uuid())
-  tenantId          String        @default("seed-tenant-aura")
+  tenantId          String
   tenant            Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   staffId           String
   staff             User          @relation(fields: [staffId], references: [id], onDelete: Cascade)
@@ -532,7 +533,7 @@ enum InventoryMovementType {
 
 model ServiceConsumable {
   id        String   @id @default(uuid())
-  tenantId  String   @default("seed-tenant-aura")
+  tenantId  String
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   serviceId String
   service   Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
@@ -548,7 +549,7 @@ model ServiceConsumable {
 
 model InventoryMovement {
   id            String                @id @default(uuid())
-  tenantId      String                @default("seed-tenant-aura")
+  tenantId      String
   tenant        Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId      String?
   branch        Branch?               @relation(fields: [branchId], references: [id], onDelete: SetNull)
@@ -576,7 +577,7 @@ enum DiscountType {
 
 model Campaign {
   id            String            @id @default(uuid())
-  tenantId      String            @default("seed-tenant-aura")
+  tenantId      String
   tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name          String
   description   String?
@@ -594,7 +595,7 @@ model Campaign {
 
 model ServiceCampaign {
   id         String   @id @default(uuid())
-  tenantId   String   @default("seed-tenant-aura")
+  tenantId   String
   tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   serviceId  String
   service    Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
@@ -609,7 +610,7 @@ model ServiceCampaign {
 
 model Coupon {
   id            String       @id @default(uuid())
-  tenantId      String       @default("seed-tenant-aura")
+  tenantId      String
   tenant        Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   code          String       @unique
   description   String?
@@ -630,7 +631,7 @@ model Coupon {
 
 model ConsentDocument {
   id            String   @id @default(uuid())
-  tenantId      String   @default("seed-tenant-aura")
+  tenantId      String
   tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   patientId     String
   patient       Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
@@ -674,7 +675,7 @@ model AuditLog {
 
 model Attendance {
   id          String   @id @default(uuid())
-  tenantId    String   @default("seed-tenant-aura")
+  tenantId    String
   tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   userId      String
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -699,7 +700,7 @@ enum ContractType {
 
 model ScheduleException {
   id             String   @id @default(uuid())
-  tenantId       String   @default("seed-tenant-aura")
+  tenantId       String
   tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   professionalId String
   professional   User     @relation(fields: [professionalId], references: [id], onDelete: Cascade)
@@ -717,7 +718,7 @@ model ScheduleException {
 
 model BranchStock {
   id        String   @id @default(uuid())
-  tenantId  String   @default("seed-tenant-aura")
+  tenantId  String
   tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId  String
   branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)

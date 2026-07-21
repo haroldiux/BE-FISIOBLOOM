@@ -11,11 +11,11 @@ import {
 
 const router = Router();
 
-// Protect all report routes to ADMIN only
-router.get('/', requireAuth, requireRole([Role.ADMIN]), getGeneralReport);
-router.get('/financial', requireAuth, requireRole([Role.ADMIN]), getFinancialReport);
-router.get('/staff', requireAuth, requireRole([Role.ADMIN]), getStaffReport);
-router.get('/inventory', requireAuth, requireRole([Role.ADMIN]), getInventoryReport);
-router.get('/export', requireAuth, requireRole([Role.ADMIN]), exportCSVReport);
+// Protect all report routes to ADMIN and SUPER_ADMIN
+router.get('/', requireAuth, requireRole([Role.ADMIN, Role.SUPER_ADMIN]), getGeneralReport);
+router.get('/financial', requireAuth, requireRole([Role.ADMIN, Role.SUPER_ADMIN]), getFinancialReport);
+router.get('/staff', requireAuth, requireRole([Role.ADMIN, Role.SUPER_ADMIN]), getStaffReport);
+router.get('/inventory', requireAuth, requireRole([Role.ADMIN, Role.SUPER_ADMIN]), getInventoryReport);
+router.get('/export', requireAuth, requireRole([Role.ADMIN, Role.SUPER_ADMIN]), exportCSVReport);
 
 export default router;

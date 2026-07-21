@@ -335,3 +335,107 @@ export const getPatientInvoices = async (req: AuthenticatedRequest, res: Respons
     res.status(500).json({ error: error.message || 'Error fetching patient invoices.' });
   }
 };
+
+export const updateInvoice = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const { paymentMethod, reference, status, subtotal, tax, total } = req.body;
+    const tenantId = req.user!.tenantId;
+
+    const existing = await prisma.invoice.findFirst({
+      where: { id: String(id), tenantId }
+    });
+
+    if (!existing) {
+      res.status(404).json({ error: 'Invoice not found.' });
+      return;
+    }
+
+    if (paymentMethod && !Object.values(PaymentMethod).includes(paymentMethod as PaymentMethod)) {
+      res.status(400).json({ error: `Invalid paymentMethod. Valid values: ${Object.values(PaymentMethod).join(', ')}` });
+      return;
+    }
+
+    if (status && !Object.values(InvoiceStatus).includes(status as InvoiceStatus)) {
+      res.status(400).json({ error: `Invalid status. Valid values: ${Object.values(InvoiceStatus).join(', ')}` });
+      return;
+    }
+
+    const updated = await prisma.invoice.update({
+      where: { id: String(id), tenantId },
+      data: {
+        ...(paymentMethod && { paymentMethod: paymentMethod as PaymentMethod }),
+        ...(reference !== undefined && { reference }),
+        ...(status && { status: status as InvoiceStatus }),
+        ...(subtotal !== undefined && { subtotal: Number(subtotal) }),
+        ...(tax !== undefined && { tax: Number(tax) }),
+        ...(total !== undefined && { total: Number(total) }),
+      },
+      include: {
+        patient: { select: { id: true, fullName: true } },
+        items: { include: { product: { select: { id: true, name: true } } } },
+      }
+    });
+
+    res.json({ message: 'Invoice updated successfully.', invoice: updated });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error updating invoice.' });
+  }
+};
+
+export const voidInvoice = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user!.tenantId;
+
+    const existing = await prisma.invoice.findFirst({
+      where: { id: String(id), tenantId },
+      include: { cashMovement: true }
+    });
+
+    if (!existing) {
+      res.status(404).json({ error: 'Invoice not found.' });
+      return;
+    }
+
+    if (existing.status === InvoiceStatus.CANCELADO) {
+      res.status(400).json({ error: 'La factura ya se encuentra anulada.' });
+      return;
+    }
+
+    const voided = await prisma.$transaction(async (tx) => {
+      // Update invoice status to CANCELADO
+      const updatedInvoice = await tx.invoice.update({
+        where: { id: String(id), tenantId },
+        data: { status: InvoiceStatus.CANCELADO },
+        include: {
+          patient: { select: { id: true, fullName: true } },
+          items: true,
+        }
+      });
+
+      // If invoice was paid and had cash movement, adjust cash register if open
+      if (existing.status === InvoiceStatus.PAGADO && existing.cashMovement) {
+        const cashReg = await tx.cashRegister.findFirst({
+          where: { id: existing.cashMovement.cashRegisterId, status: CashStatus.OPEN, tenantId }
+        });
+
+        if (cashReg) {
+          await tx.cashRegister.update({
+            where: { id: cashReg.id, tenantId },
+            data: {
+              expectedBalance: { decrement: existing.total }
+            }
+          });
+        }
+      }
+
+      return updatedInvoice;
+    });
+
+    res.json({ message: 'Invoice voided successfully.', invoice: voided });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error voiding invoice.' });
+  }
+};
+

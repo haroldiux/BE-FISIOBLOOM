@@ -65,7 +65,7 @@ export const tenantMiddleware = async (
       tenantContext.run({}, () => next());
       return;
     }
-    res.status(400).json({ error: 'Acceso denegado. Cabecera X-Tenant-ID o token de autenticación requerido.' });
+    res.status(400).json({ error: 'x-tenant-id header is required' });
     return;
   }
 

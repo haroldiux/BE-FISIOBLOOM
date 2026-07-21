@@ -3,6 +3,7 @@ import { Role } from '@prisma/client';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
 import { storageService } from '../services/storage';
+import { sanitizeXSS } from '../services/sanitize';
 
 export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
@@ -75,16 +76,16 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
 
     const patientData: any = {
       id: id ? String(id) : undefined,
-      fullName,
-      phone,
-      email: email || null,
+      fullName: sanitizeXSS(fullName),
+      phone: sanitizeXSS(phone),
+      email: email ? sanitizeXSS(email) : null,
       consentSigned: consentSigned !== undefined ? Boolean(consentSigned) : false,
       tenantId,
     };
 
     // Receptionists cannot register medical history
     if (!isReceptionist && medicalHistory !== undefined) {
-      patientData.medicalHistory = medicalHistory;
+      patientData.medicalHistory = medicalHistory ? sanitizeXSS(medicalHistory) : null;
     }
 
     const newPatient = await prisma.patient.create({
@@ -228,11 +229,11 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
     }
 
     const updateData: any = {};
-    if (fullName !== undefined) updateData.fullName = fullName;
-    if (phone !== undefined) updateData.phone = phone;
-    if (email !== undefined) updateData.email = email || null;
+    if (fullName !== undefined) updateData.fullName = sanitizeXSS(fullName);
+    if (phone !== undefined) updateData.phone = sanitizeXSS(phone);
+    if (email !== undefined) updateData.email = email ? sanitizeXSS(email) : null;
     if (consentSigned !== undefined) updateData.consentSigned = Boolean(consentSigned);
-    if (!isReceptionist && medicalHistory !== undefined) updateData.medicalHistory = medicalHistory;
+    if (!isReceptionist && medicalHistory !== undefined) updateData.medicalHistory = medicalHistory ? sanitizeXSS(medicalHistory) : null;
 
     const updatedPatient = await prisma.patient.update({
       where: { id: id as string, tenantId },

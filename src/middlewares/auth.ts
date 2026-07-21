@@ -29,17 +29,17 @@ export const requireAuth = async (
     }
 
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET) as {
-      id: string;
-      email: string;
-      role: Role;
-      tenantId: string;
-      branchId?: string;
-    };
+    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const userId = decoded.userId || decoded.id;
+
+    if (!userId) {
+      res.status(401).json({ error: 'Invalid token payload.' });
+      return;
+    }
 
     // Fetch user from DB to ensure they still exist and are active
     const user = await prisma.user.findUnique({
-      where: { id: decoded.id },
+      where: { id: userId },
     });
 
     if (!user) {
@@ -76,7 +76,7 @@ export const requireRole = (allowedRoles: Role[]) => {
     }
 
     if (!allowedRoles.includes(req.user.role)) {
-      res.status(403).json({ error: 'Access denied. Insufficient permissions.' });
+      res.status(403).json({ error: 'Insufficient permissions.' });
       return;
     }
 

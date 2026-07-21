@@ -5,6 +5,7 @@ import { AuthenticatedRequest } from '../middlewares/auth';
 export const createPackage = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { patientId, packageName, expiresAt, lines } = req.body;
+    const tenantId = req.user!.tenantId;
 
     if (!patientId || !packageName || !expiresAt || !lines || !Array.isArray(lines) || lines.length === 0) {
       res.status(400).json({ error: 'patientId, packageName, expiresAt, and a non-empty lines array are required.' });
@@ -13,7 +14,7 @@ export const createPackage = async (req: AuthenticatedRequest, res: Response): P
 
     // Check if patient exists and is active
     const patient = await prisma.patient.findFirst({
-      where: { id: patientId, isActive: true },
+      where: { id: patientId, tenantId, isActive: true },
     });
 
     if (!patient) {
@@ -32,12 +33,15 @@ export const createPackage = async (req: AuthenticatedRequest, res: Response): P
     // Create TreatmentPackage and TreatmentPackageLines in a transaction
     const newPackage = await prisma.treatmentPackage.create({
       data: {
+        tenantId,
         patientId,
         packageName,
         expiresAt: new Date(expiresAt),
         status: 'ACTIVE',
         lines: {
-          create: lines.map((line) => ({
+          create: lines.map((line: any) => ({
+            tenantId,
+            serviceId: line.serviceId || null,
             serviceName: line.serviceName,
             totalSessions: line.totalSessions,
             usedSessions: 0,
