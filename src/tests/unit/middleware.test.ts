@@ -15,7 +15,7 @@ describe('Unit Tests: Middlewares & Sanitization (Task 5.1)', () => {
       await requireAuth(req, res, next);
 
       expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Access denied. No token provided.' });
+      expect(res.json).toHaveBeenCalledWith({ error: 'Acceso denegado. No se proporcionó un token.' });
       expect(next).not.toHaveBeenCalled();
     });
 
@@ -32,7 +32,7 @@ describe('Unit Tests: Middlewares & Sanitization (Task 5.1)', () => {
       await requireAuth(req, res, next);
 
       expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Access denied. No token provided.' });
+      expect(res.json).toHaveBeenCalledWith({ error: 'Acceso denegado. No se proporcionó un token.' });
       expect(next).not.toHaveBeenCalled();
     });
   });

@@ -31,6 +31,7 @@ describe('Módulo de Notificaciones del Sistema', () => {
       data: {
         id: 'low-stock-prod-id',
         tenantId: testData.tenant.id,
+        branchId: testData.branch.id,
         name: 'Crema Hidratante',
         category: 'PRODUCTO',
         price: 15,

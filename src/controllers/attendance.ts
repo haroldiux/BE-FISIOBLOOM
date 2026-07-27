@@ -1,16 +1,23 @@
 import { Response } from 'express';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
+import { getBoliviaDayAndMinutes, getBoliviaTodayRange } from '../services/appointment.service';
+import { evaluateShift, getTodaySchedule, autoCloseExpiredAttendance } from '../services/shift.service';
 
 export const checkIn = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
     const tenantId = req.user!.tenantId;
 
-    // Buscar si ya hay un fichaje activo hoy sin checkOut
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const now = new Date();
 
+    // Si quedó una entrada de un turno anterior sin salida fichada (se le
+    // olvidó), se cierra sola antes de evaluar nada más.
+    await autoCloseExpiredAttendance(userId, tenantId, now);
+
+    const { start: todayStart } = getBoliviaTodayRange(now);
+
+    // Buscar si ya hay un fichaje activo hoy sin checkOut
     const activeAttendance = await prisma.attendance.findFirst({
       where: {
         userId,
@@ -25,63 +32,29 @@ export const checkIn = async (req: AuthenticatedRequest, res: Response): Promise
       return;
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-    });
+    const schedule = await getTodaySchedule(userId, tenantId, now);
 
-    if (!user) {
-      res.status(404).json({ error: 'Usuario no encontrado.' });
-      return;
-    }
-
-    const now = new Date();
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-
-    // 1. Check for schedule exception
-    const exception = await prisma.scheduleException.findFirst({
-      where: {
-        professionalId: userId,
-        tenantId,
-        date: {
-          gte: todayStart,
-          lte: todayEnd,
-        },
-      },
-    });
-
-    let scheduledStartTime: string | null = null;
-    let isDayOff = false;
-
-    if (exception) {
-      if (exception.isAvailable) {
-        scheduledStartTime = exception.startTime;
-      } else {
-        isDayOff = true;
-      }
-    } else {
-      // 2. No exception, use regular working hours
-      const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-      const dayName = daysOfWeek[now.getDay()];
-      const workingHours = user.workingHours as any;
-      const todaySchedule = workingHours?.[dayName];
-
-      if (todaySchedule && todaySchedule.start) {
-        scheduledStartTime = todaySchedule.start;
-      } else {
-        isDayOff = true;
-      }
-    }
-
-    if (isDayOff) {
+    if (schedule.isDayOff) {
       res.status(400).json({ error: 'No tienes turno programado para hoy (Día libre).' });
       return;
     }
 
+    const { minutesOfDay: actualMinutes } = getBoliviaDayAndMinutes(now);
+
+    // Si ya pasó la hora de fin de turno de hoy, no tiene sentido fichar
+    // entrada de nuevo: el turno de hoy ya terminó.
+    if (schedule.end) {
+      const [endHour, endMinute] = schedule.end.split(':').map(Number);
+      const scheduledEndMinutes = endHour * 60 + endMinute;
+      if (actualMinutes > scheduledEndMinutes) {
+        res.status(400).json({ error: 'Ya terminó tu turno de hoy, no podés volver a fichar entrada.' });
+        return;
+      }
+    }
+
     let status = 'PRESENT';
-    if (scheduledStartTime) {
-      const [schedHour, schedMinute] = scheduledStartTime.split(':').map(Number);
-      const actualMinutes = now.getHours() * 60 + now.getMinutes();
+    if (schedule.start) {
+      const [schedHour, schedMinute] = schedule.start.split(':').map(Number);
       const scheduledMinutes = schedHour * 60 + schedMinute;
       if (actualMinutes > scheduledMinutes) {
         status = 'LATE';
@@ -111,8 +84,7 @@ export const checkOut = async (req: AuthenticatedRequest, res: Response): Promis
     const userId = req.user!.id;
     const tenantId = req.user!.tenantId;
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const { start: todayStart } = getBoliviaTodayRange();
 
     // Buscar fichaje activo sin checkOut
     const activeAttendance = await prisma.attendance.findFirst({
@@ -150,8 +122,13 @@ export const getCurrentStatus = async (req: AuthenticatedRequest, res: Response)
     const userId = req.user!.id;
     const tenantId = req.user!.tenantId;
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
+    const now = new Date();
+    // Cierra sola cualquier entrada fichada de un turno ya terminado antes de
+    // reportar el estado actual, para que el botón de fichar no quede
+    // mostrando "Fichar Salida" de un turno que ya pasó.
+    await autoCloseExpiredAttendance(userId, tenantId, now);
+
+    const { start: todayStart } = getBoliviaTodayRange(now);
 
     const activeAttendance = await prisma.attendance.findFirst({
       where: {
@@ -162,9 +139,14 @@ export const getCurrentStatus = async (req: AuthenticatedRequest, res: Response)
       },
     });
 
+    const shift = await evaluateShift(userId, tenantId, req.user!.role);
+
     res.json({
       hasCheckedIn: !!activeAttendance,
       attendance: activeAttendance,
+      canOperate: shift.ok,
+      shiftReason: shift.ok ? null : shift.reason,
+      shiftMessage: shift.ok ? null : shift.message,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al obtener estado de asistencia.' });

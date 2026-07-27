@@ -67,6 +67,10 @@ model Branch {
   cashRegisters      CashRegister[]
   inventoryMovements InventoryMovement[]
   branchStocks               BranchStock[]
+  products                   Product[]
+  services                   Service[]
+  consentDocuments           ConsentDocument[]
+  treatmentPackages          TreatmentPackage[]
   sourceBranchMovements      InventoryMovement[] @relation("SourceBranchMovements")
   destinationBranchMovements InventoryMovement[] @relation("DestinationBranchMovements")
 
@@ -101,8 +105,16 @@ model User {
   name            String
   role            Role           @default(PHYSIO)
   isActive        Boolean        @default(true)
+  // Bloqueo de seguridad por intentos de login fallidos (3 seguidos bloquea
+  // la cuenta hasta que un ADMIN la desbloquee — ver POST /auth/login y
+  // PATCH /professionals/:id/unlock). Distinto de isActive (que es una baja
+  // manual del admin): esto es automático y solo lo puede revertir un admin.
+  failedLoginAttempts Int         @default(0)
+  accountLocked       Boolean     @default(false)
   workingHours    Json?          // e.g. { monday: { start: "09:00", end: "18:00" } }
   appointments    Appointment[]
+  registeredPatients Patient[]
+  invoicesSold    Invoice[]
   openedRegisters CashRegister[] @relation("OpenedBy")
   closedRegisters CashRegister[] @relation("ClosedBy")
   cashMovements   CashMovement[]
@@ -127,6 +139,8 @@ model Patient {
   tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   branchId          String?
   branch            Branch?            @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  createdById       String?
+  createdBy         User?              @relation(fields: [createdById], references: [id], onDelete: SetNull)
   fullName          String
   phone             String
   email             String?
@@ -150,9 +164,16 @@ model TreatmentPackage {
   id          String                 @id @default(uuid())
   tenantId    String
   tenant      Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId    String?
+  branch      Branch?                @relation(fields: [branchId], references: [id], onDelete: SetNull)
   patientId   String
   patient     Patient                @relation(fields: [patientId], references: [id], onDelete: Cascade)
   packageName String
+  // Precio combo con el que se vendió el paquete (heredado del PackageTemplate
+  // al momento de la venta) — sin esto, al facturar la sesión combinada no hay
+  // forma de saber el precio pactado y se termina cobrando la suma de precios
+  // sueltos de cada servicio, que es MÁS CARO que el combo (pierde el descuento).
+  totalPrice  Float?
   purchasedAt DateTime               @default(now())
   expiresAt   DateTime
   status      String                 @default("ACTIVE") // ACTIVE, EXPIRED, COMPLETED
@@ -161,6 +182,7 @@ model TreatmentPackage {
   updatedAt   DateTime               @updatedAt
 
   @@index([tenantId])
+  @@index([tenantId, branchId])
 }
 
 model TreatmentPackageLine {
@@ -193,10 +215,12 @@ model Appointment {
   professional       User                @relation(fields: [professionalId], references: [id], onDelete: Cascade)
   serviceId          String?
   service            Service?            @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  additionalServiceIds String[]          @default([]) // Servicios extra elegidos para la misma cita (ej. "esto y esto")
   dateTime           DateTime
   duration           Int                 // in minutes
   status             AppointmentStatus   @default(PENDIENTE)
   cabin              String?
+  notes              String?
   sessionDetail      SessionDetail?
   invoice            Invoice?
   originalRetouches  RetouchSchedule[]   @relation("OriginalAppointment")
@@ -218,6 +242,12 @@ model SessionDetail {
   appointment    Appointment           @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
   packageLineId  String?
   packageLine    TreatmentPackageLine? @relation(fields: [packageLineId], references: [id], onDelete: SetNull)
+  // Cuando una cita combina varios servicios de un mismo paquete (vendidos
+  // juntos como un solo combo, ver "Nueva Cita" → pestaña "Paquete"), esta
+  // única sesión completada tiene que descontar TODAS esas líneas a la vez,
+  // no solo una — acá van las líneas además de packageLineId (que guarda la
+  // primera/principal), mismo patrón que Appointment.additionalServiceIds.
+  additionalPackageLineIds String[]      @default([])
   evolutionNotes String?
   measurements   Json?                 // e.g. { weight, waist, hip, leftThigh, rightThigh }
   createdAt      DateTime              @default(now())
@@ -230,8 +260,11 @@ model Product {
   id                 String              @id @default(uuid())
   tenantId           String
   tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId           String
+  branch             Branch              @relation(fields: [branchId], references: [id], onDelete: Cascade)
   name               String
   category           String              // 'TRATAMIENTO' | 'PRODUCTO'
+  recommendedCategory ServiceCategory?   // Para sugerirlo como complemento según el tipo de servicio atendido
   price              Float
   costPrice          Float               @default(0.0)
   stock              Int                 @default(0)
@@ -245,6 +278,7 @@ model Product {
   updatedAt          DateTime            @updatedAt
 
   @@index([tenantId])
+  @@index([tenantId, branchId])
 }
 
 enum PaymentMethod {
@@ -270,6 +304,14 @@ model Invoice {
   patient       Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
   appointmentId String?       @unique
   appointment   Appointment?  @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  // Una sola factura puede cobrar varias citas atendidas a la vez (ej. el
+  // cajero cobra 2 sesiones distintas juntas en un solo "Completar Venta").
+  // appointmentId solo puede apuntar a UNA cita — acá van las demás, para que
+  // ninguna quede marcada erróneamente como "todavía sin cobrar" después de
+  // haber sido pagada dentro de esta misma factura.
+  additionalAppointmentIds String[] @default([])
+  soldById      String?
+  soldBy        User?         @relation(fields: [soldById], references: [id], onDelete: SetNull)
   items         InvoiceItem[]
   subtotal      Float
   tax           Float         @default(0)
@@ -322,6 +364,8 @@ model Service {
   id                String                 @id @default(uuid())
   tenantId          String
   tenant            Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId          String
+  branch            Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
   name              String
   category          ServiceCategory
   treatmentType     TreatmentType          @default(SINGLE_SESSION)
@@ -342,6 +386,7 @@ model Service {
   updatedAt         DateTime               @updatedAt
 
   @@index([tenantId])
+  @@index([tenantId, branchId])
 }
 
 model PackageTemplate {
@@ -350,6 +395,7 @@ model PackageTemplate {
   tenant       Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name         String
   description  String?
+  category     ServiceCategory
   validityDays Int                    @default(90)
   totalPrice   Float
   isActive     Boolean                @default(true)
@@ -633,6 +679,8 @@ model ConsentDocument {
   id            String   @id @default(uuid())
   tenantId      String
   tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId      String?
+  branch        Branch?  @relation(fields: [branchId], references: [id], onDelete: SetNull)
   patientId     String
   patient       Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
   serviceId     String
@@ -641,6 +689,7 @@ model ConsentDocument {
   signedAt      DateTime @default(now())
 
   @@index([tenantId])
+  @@index([tenantId, branchId])
 }
 
 model PatientPhoto {

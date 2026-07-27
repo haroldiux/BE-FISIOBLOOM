@@ -24,7 +24,7 @@ export const requireAuth = async (
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      res.status(401).json({ error: 'Access denied. No token provided.' });
+      res.status(401).json({ error: 'Acceso denegado. No se proporcionó un token.' });
       return;
     }
 
@@ -33,7 +33,7 @@ export const requireAuth = async (
     const userId = decoded.userId || decoded.id;
 
     if (!userId) {
-      res.status(401).json({ error: 'Invalid token payload.' });
+      res.status(401).json({ error: 'Token inválido.' });
       return;
     }
 
@@ -43,12 +43,12 @@ export const requireAuth = async (
     });
 
     if (!user) {
-      res.status(401).json({ error: 'User not found.' });
+      res.status(401).json({ error: 'Usuario no encontrado.' });
       return;
     }
 
     if (!user.isActive) {
-      res.status(403).json({ error: 'User account is deactivated.' });
+      res.status(403).json({ error: 'La cuenta de usuario está desactivada.' });
       return;
     }
 
@@ -64,19 +64,19 @@ export const requireAuth = async (
     next();
   } catch (error: any) {
     console.error('DEBUG REQUIREAUTH ERROR:', error.message || error);
-    res.status(401).json({ error: 'Invalid or expired token.', details: error.message });
+    res.status(401).json({ error: 'Token inválido o expirado.', details: error.message });
   }
 };
 
 export const requireRole = (allowedRoles: Role[]) => {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
     if (!req.user) {
-      res.status(401).json({ error: 'Unauthorized.' });
+      res.status(401).json({ error: 'No autorizado.' });
       return;
     }
 
     if (!allowedRoles.includes(req.user.role)) {
-      res.status(403).json({ error: 'Insufficient permissions.' });
+      res.status(403).json({ error: 'Permisos insuficientes.' });
       return;
     }
 

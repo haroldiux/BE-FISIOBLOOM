@@ -30,7 +30,7 @@ export const getSettings = async (req: AuthenticatedRequest, res: Response): Pro
     });
 
     if (!tenant) {
-      res.status(404).json({ error: 'Tenant not found.' });
+      res.status(404).json({ error: 'Clínica no encontrada.' });
       return;
     }
 
@@ -90,7 +90,7 @@ export const updateSettings = async (req: AuthenticatedRequest, res: Response): 
     // Validar branding.palette si se proporciona
     if (branding && branding.palette !== undefined && !isAllowedPalette(branding.palette)) {
       res.status(400).json({
-        error: `Invalid palette. Allowed values: ${ALLOWED_PALETTES.join(', ')}.`,
+        error: `Paleta inválida. Valores permitidos: ${ALLOWED_PALETTES.join(', ')}.`,
       });
       return;
     }
@@ -100,7 +100,7 @@ export const updateSettings = async (req: AuthenticatedRequest, res: Response): 
     });
 
     if (!existing) {
-      res.status(404).json({ error: 'Tenant not found.' });
+      res.status(404).json({ error: 'Clínica no encontrada.' });
       return;
     }
 

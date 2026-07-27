@@ -17,8 +17,8 @@ export const tenantMiddleware = async (
   const tenantIdHeader = req.headers['x-tenant-id'] as string;
   const branchIdHeader = req.headers['x-branch-id'] as string;
 
-  let tenantId = tenantIdHeader;
-  let branchId = branchIdHeader;
+  let tenantId: string | undefined = tenantIdHeader;
+  let branchId: string | undefined = branchIdHeader;
 
   // Resolving tenant slug query param for public portal
   const tenantSlug = req.query.tenant as string;
@@ -36,15 +36,22 @@ export const tenantMiddleware = async (
   }
 
   // Si no hay cabecera pero hay token Bearer, intentamos decodificarlo para obtener el tenantId
-  if (!tenantId && req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
     try {
       const token = req.headers.authorization.split(' ')[1];
-      const decoded = jwt.decode(token) as { tenantId?: string; branchId?: string } | null;
-      if (decoded?.tenantId) {
+      const decoded = jwt.decode(token) as { tenantId?: string; branchId?: string; role?: string } | null;
+      if (!tenantId && decoded?.tenantId) {
         tenantId = decoded.tenantId;
-        if (!branchId && decoded.branchId) {
-          branchId = decoded.branchId;
-        }
+      }
+      // Aislamiento entre sucursales: solo SUPER_ADMIN puede pedir ver una
+      // sucursal distinta a la suya (o todas) mandando la cabecera X-Branch-ID.
+      // Cualquier otro rol queda siempre atado a su propia sucursal, sin
+      // importar qué venga en la cabecera/localStorage del cliente.
+      // El Súper Admin no pertenece a ninguna sucursal en particular: si no
+      // manda X-Branch-ID explícito, ve "todas" (branchId queda sin definir),
+      // sin caer nunca en un branchId propio guardado por accidente.
+      if (decoded?.role !== 'SUPER_ADMIN') {
+        branchId = decoded?.branchId || undefined;
       }
     } catch (e) {
       // Ignorar error de decodificación, el middleware de autenticación lo validará
@@ -65,7 +72,7 @@ export const tenantMiddleware = async (
       tenantContext.run({}, () => next());
       return;
     }
-    res.status(400).json({ error: 'x-tenant-id header is required' });
+    res.status(400).json({ error: 'Falta la cabecera x-tenant-id.' });
     return;
   }
 

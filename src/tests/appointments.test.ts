@@ -188,6 +188,7 @@ describe('Módulo de Citas (Agendamiento y Colisiones)', () => {
         data: {
           id: 'test-retouch-service-id',
           tenantId: testData.tenant.id,
+          branchId: testData.branch.id,
           name: 'Servicio Retocable',
           category: 'ESTETICA',
           treatmentType: 'RETOUCHABLE',
@@ -202,6 +203,7 @@ describe('Módulo de Citas (Agendamiento y Colisiones)', () => {
         data: {
           id: 'test-consumable-product-id',
           tenantId: testData.tenant.id,
+          branchId: testData.branch.id,
           name: 'Serum Reversion',
           category: 'TRATAMIENTO',
           price: 50,
@@ -433,6 +435,7 @@ describe('Módulo de Citas (Agendamiento y Colisiones)', () => {
         data: {
           id: 'test-retouch-service-generic-id',
           tenantId: testData.tenant.id,
+          branchId: testData.branch.id,
           name: 'Servicio Retocable',
           category: 'ESTETICA',
           treatmentType: 'RETOUCHABLE',
@@ -447,6 +450,7 @@ describe('Módulo de Citas (Agendamiento y Colisiones)', () => {
         data: {
           id: 'test-consumable-product-generic-id',
           tenantId: testData.tenant.id,
+          branchId: testData.branch.id,
           name: 'Serum Reversion',
           category: 'TRATAMIENTO',
           price: 50,

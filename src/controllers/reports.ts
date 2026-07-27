@@ -1,6 +1,8 @@
 import { Response } from 'express';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
+import { Role } from '@prisma/client';
+import { getBoliviaTodayRange, getBoliviaDayAndMinutes } from '../services/appointment.service';
 
 const round = (num: number): number => Math.round(num * 100) / 100;
 
@@ -569,7 +571,26 @@ export const getGeneralReport = async (req: AuthenticatedRequest, res: Response)
     let prevStart = new Date();
     let prevEnd = new Date();
 
-    if (range === 'este_mes') {
+    if (range === 'hoy') {
+      // Hora de Bolivia, no la del contenedor (que corre en UTC) — mismo
+      // helper que ya se usa para asistencia/turnos, para no repetir el bug
+      // de zona horaria que ya se dio varias veces en este sistema.
+      const today = getBoliviaTodayRange(now);
+      start = today.start;
+      end = today.end;
+      const yesterday = getBoliviaTodayRange(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+      prevStart = yesterday.start;
+      prevEnd = yesterday.end;
+    } else if (range === 'esta_semana') {
+      const { dayOfWeek } = getBoliviaDayAndMinutes(now);
+      const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+      const monday = getBoliviaTodayRange(new Date(now.getTime() - diffToMonday * 24 * 60 * 60 * 1000));
+      start = monday.start;
+      end = getBoliviaTodayRange(new Date(monday.start.getTime() + 6 * 24 * 60 * 60 * 1000)).end;
+      const prevMonday = getBoliviaTodayRange(new Date(monday.start.getTime() - 7 * 24 * 60 * 60 * 1000));
+      prevStart = prevMonday.start;
+      prevEnd = getBoliviaTodayRange(new Date(prevMonday.start.getTime() + 6 * 24 * 60 * 60 * 1000)).end;
+    } else if (range === 'este_mes') {
       start = new Date(now.getFullYear(), now.getMonth(), 1);
       end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
       prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -595,6 +616,14 @@ export const getGeneralReport = async (req: AuthenticatedRequest, res: Response)
       prevEnd = new Date(start.getTime() - 1000);
     }
 
+    // Igual que en finance.ts: un ADMIN de sucursal solo puede ver la nómina
+    // de su propio personal (no administradores); el SÚPER ADMIN ve todo.
+    const staffWhere: any = {};
+    if (req.user!.role !== Role.SUPER_ADMIN) {
+      staffWhere.branchId = req.user!.branchId;
+      staffWhere.role = { notIn: [Role.ADMIN, Role.SUPER_ADMIN] };
+    }
+
     // Run queries in parallel
     const [
       invoices,
@@ -608,32 +637,44 @@ export const getGeneralReport = async (req: AuthenticatedRequest, res: Response)
       activeProducts,
       stockMovements,
       completedApptsForTreatments,
-      sessionMovements
+      sessionMovements,
+      sessionMovementsPrev,
+      mermaMovements,
+      mermaMovementsPrev,
+      nominaPeriodo
     ] = await Promise.all([
       // 1. Invoices
       prisma.invoice.findMany({
         where: { tenantId, status: 'PAGADO', paidAt: { gte: start, lte: end } },
-        include: { branch: { select: { name: true } } }
+        include: {
+          branch: { select: { name: true } },
+          patient: { select: { fullName: true } },
+          soldBy: { select: { name: true } },
+          appointment: { select: { professional: { select: { name: true } } } },
+          items: { include: { product: { select: { costPrice: true } } } },
+        }
       }),
       // 2. Invoices prev
       prisma.invoice.findMany({
-        where: { tenantId, status: 'PAGADO', paidAt: { gte: prevStart, lte: prevEnd } }
+        where: { tenantId, status: 'PAGADO', paidAt: { gte: prevStart, lte: prevEnd } },
+        include: { items: { include: { product: { select: { costPrice: true } } } } }
       }),
       // 3. Expenses
       prisma.cashMovement.findMany({
-        where: { tenantId, type: 'EXPENSE', createdAt: { gte: start, lte: end } }
+        where: { tenantId, type: 'EXPENSE', createdAt: { gte: start, lte: end } },
+        include: { user: { select: { name: true } } }
       }),
       // 4. Expenses prev
       prisma.cashMovement.findMany({
         where: { tenantId, type: 'EXPENSE', createdAt: { gte: prevStart, lte: prevEnd } }
       }),
-      // 5. Payroll
+      // 5. Payroll (solo del personal que este usuario puede ver/pagar)
       prisma.payrollEntry.findMany({
-        where: { tenantId, status: 'PAID', paidAt: { gte: start, lte: end } }
+        where: { tenantId, status: 'PAID', paidAt: { gte: start, lte: end }, staff: staffWhere }
       }),
       // 6. Payroll prev
       prisma.payrollEntry.findMany({
-        where: { tenantId, status: 'PAID', paidAt: { gte: prevStart, lte: prevEnd } }
+        where: { tenantId, status: 'PAID', paidAt: { gte: prevStart, lte: prevEnd }, staff: staffWhere }
       }),
       // 7. Citas
       prisma.appointment.count({
@@ -646,22 +687,51 @@ export const getGeneralReport = async (req: AuthenticatedRequest, res: Response)
       // 9. Active products
       prisma.product.findMany({
         where: { tenantId, isActive: true },
-        select: { price: true, stock: true }
+        select: { name: true, price: true, costPrice: true, stock: true }
       }),
       // 10. Stock movements in range
       prisma.inventoryMovement.findMany({
         where: { tenantId, createdAt: { gte: start, lte: end } },
-        include: { product: { select: { price: true } } }
+        include: { product: { select: { price: true, costPrice: true } } }
       }),
       // 11. Completed appointments for treatments
       prisma.appointment.findMany({
         where: { tenantId, status: 'COMPLETADA', dateTime: { gte: start, lte: end }, serviceId: { not: null } },
-        include: { service: { select: { name: true } } }
+        include: {
+          service: { select: { name: true } },
+          professional: { select: { id: true, name: true, role: true } },
+          invoice: { select: { total: true } },
+        }
       }),
       // 12. Session consumption movements for top supplies
       prisma.inventoryMovement.findMany({
         where: { tenantId, type: 'SESSION_CONSUMPTION', createdAt: { gte: start, lte: end } },
-        include: { product: { select: { name: true } } }
+        include: {
+          product: { select: { name: true, costPrice: true } },
+          appointment: { select: { professional: { select: { name: true } } } },
+        }
+      }),
+      // 13. Session consumption movements (previous period, for egresos diff)
+      prisma.inventoryMovement.findMany({
+        where: { tenantId, type: 'SESSION_CONSUMPTION', createdAt: { gte: prevStart, lte: prevEnd } },
+        include: { product: { select: { costPrice: true } } }
+      }),
+      // 14. Mermas (STOCK_OUT manuales, no ligadas a una cita) en el período
+      prisma.inventoryMovement.findMany({
+        where: { tenantId, type: 'STOCK_OUT', appointmentId: null, createdAt: { gte: start, lte: end } },
+        include: { product: { select: { name: true, costPrice: true } } }
+      }),
+      // 15. Mermas del período anterior, para el diff
+      prisma.inventoryMovement.findMany({
+        where: { tenantId, type: 'STOCK_OUT', appointmentId: null, createdAt: { gte: prevStart, lte: prevEnd } },
+        include: { product: { select: { costPrice: true } } }
+      }),
+      // 16. Nómina del período (cualquier estado: pagada o pendiente) para el
+      // detalle de auditoría "a quién se le pagó y a quién no".
+      prisma.payrollEntry.findMany({
+        where: { tenantId, periodStart: { lte: end }, periodEnd: { gte: start }, staff: staffWhere },
+        include: { staff: { select: { name: true, role: true } } },
+        orderBy: { periodStart: 'desc' }
       })
     ]);
 
@@ -672,14 +742,46 @@ export const getGeneralReport = async (req: AuthenticatedRequest, res: Response)
       ? round(((ingresosNetos - ingresosNetosPrev) / ingresosNetosPrev) * 100)
       : (ingresosNetos > 0 ? 100 : 0);
 
-    // KPI 2: Egresos (Expenses excluding payroll-related + Payrolls)
+    // KPI 2: Egresos (Expenses excluding payroll-related + Payrolls + costo real
+    // de insumos consumidos en sesiones + costo de productos vendidos). El costo
+    // de los insumos ya se pagó al comprarlos (se descuenta de "Valor en Costo"
+    // de Almacén al consumirse/venderse), pero también es un costo real de
+    // operar el servicio y debe reflejarse acá para que Ingresos - Egresos
+    // muestre la ganancia real del período.
+    const costoInsumosConsumidos = sessionMovements.reduce((sum, m) => sum + m.quantity * (m.product?.costPrice ?? 0), 0);
+    // Costo de productos vendidos directamente por Terminal POS (ítems de
+    // factura con productId): antes no se contaba en ningún lado, así que se
+    // cobraba la venta completa como ganancia sin descontar lo que costó
+    // comprar ese producto.
+    const costoProductosVendidos = invoices.reduce(
+      (sum, inv) => sum + inv.items.reduce((s, item) => s + (item.product ? item.quantity * item.product.costPrice : 0), 0),
+      0
+    );
+    const costoProductosVendidosPrev = invoicesPrev.reduce(
+      (sum, inv) => sum + inv.items.reduce((s, item) => s + (item.product ? item.quantity * item.product.costPrice : 0), 0),
+      0
+    );
+    const costoInsumosConsumidosPrev = sessionMovementsPrev.reduce((sum, m) => sum + m.quantity * (m.product?.costPrice ?? 0), 0);
+    // Costo real de mermas (stock dañado/vencido/perdido, ajustado a mano): es
+    // plata que ya se invirtió y se perdió, así que también es un costo real
+    // del período, igual que en la tarjeta "Pérdidas por Mermas" de Almacén.
+    const costoMermas = mermaMovements.reduce((sum, m) => sum + m.quantity * (m.product?.costPrice ?? 0), 0);
+    const costoMermasPrev = mermaMovementsPrev.reduce((sum, m) => sum + m.quantity * (m.product?.costPrice ?? 0), 0);
+
     const egresosGeneral = expenses.filter((e) => !e.description.includes('Pago de Nómina')).reduce((sum, e) => sum + e.amount, 0);
     const egresosPayroll = payrolls.reduce((sum, p) => sum + p.totalPaid, 0);
-    const egresos = egresosGeneral + egresosPayroll;
+    const egresos = egresosGeneral + egresosPayroll + costoInsumosConsumidos + costoProductosVendidos + costoMermas;
 
     const egresosGeneralPrev = expensesPrev.filter((e) => !e.description.includes('Pago de Nómina')).reduce((sum, e) => sum + e.amount, 0);
     const egresosPayrollPrev = payrollsPrev.reduce((sum, p) => sum + p.totalPaid, 0);
-    const egresosPrevVal = egresosGeneralPrev + egresosPayrollPrev;
+    const egresosPrevVal = egresosGeneralPrev + egresosPayrollPrev + costoInsumosConsumidosPrev + costoProductosVendidosPrev + costoMermasPrev;
+
+    // KPI extra: Ganancia Real (Ingresos - Egresos, incluyendo costo de insumos consumidos)
+    const gananciaReal = ingresosNetos - egresos;
+    const gananciaRealPrev = ingresosNetosPrev - egresosPrevVal;
+    const gananciaRealDiff = gananciaRealPrev > 0
+      ? round(((gananciaReal - gananciaRealPrev) / gananciaRealPrev) * 100)
+      : (gananciaReal > 0 ? 100 : 0);
     
     const egresosDiff = egresosPrevVal > 0
       ? round(((egresos - egresosPrevVal) / egresosPrevVal) * 100)
@@ -692,12 +794,14 @@ export const getGeneralReport = async (req: AuthenticatedRequest, res: Response)
       ? round(((citasCompletadas - citasCompletadasPrev) / citasCompletadasPrev) * 100)
       : (citasCompletadas > 0 ? 100 : 0);
 
-    // KPI 4: Valor de Almacen
-    const valorAlmacen = activeProducts.reduce((sum, p) => sum + (p.stock * p.price), 0);
+    // KPI 4: Valor de Almacen — "costo acumulado de insumos en stock" debe
+    // reflejar lo que realmente costó comprar el stock (costPrice), no lo que
+    // valdría venderlo (price), que es una métrica distinta (PVP).
+    const valorAlmacen = activeProducts.reduce((sum, p) => sum + (p.stock * p.costPrice), 0);
     let movementsValueChange = 0;
     for (const mov of stockMovements) {
       if (mov.product) {
-        const val = mov.quantity * mov.product.price;
+        const val = mov.quantity * mov.product.costPrice;
         if (mov.type === 'STOCK_IN') {
           movementsValueChange += val;
         } else {
@@ -806,22 +910,248 @@ export const getGeneralReport = async (req: AuthenticatedRequest, res: Response)
       porSucursal[branchName] = round((porSucursal[branchName] || 0) + inv.total);
     }
 
+    // Desglose por Profesional: cuántas citas atendió cada uno, cuánto
+    // facturaron esas citas, y cuánto costó (a precio de costo) el insumo
+    // que consumieron — para poder auditar quién atendió a quién y a qué costo.
+    const costoInsumosPorCita: Record<string, number> = {};
+    for (const mov of sessionMovements) {
+      if (mov.appointmentId) {
+        costoInsumosPorCita[mov.appointmentId] = (costoInsumosPorCita[mov.appointmentId] || 0) + mov.quantity * (mov.product?.costPrice ?? 0);
+      }
+    }
+    const staffMap: Record<string, { name: string; role: string; citasAtendidas: number; ingresos: number; costoInsumos: number }> = {};
+    for (const appt of completedApptsForTreatments) {
+      if (!appt.professional) continue;
+      const key = appt.professional.id;
+      if (!staffMap[key]) {
+        staffMap[key] = { name: appt.professional.name, role: appt.professional.role, citasAtendidas: 0, ingresos: 0, costoInsumos: 0 };
+      }
+      staffMap[key].citasAtendidas += 1;
+      staffMap[key].ingresos += appt.invoice?.total ?? 0;
+      staffMap[key].costoInsumos += costoInsumosPorCita[appt.id] ?? 0;
+    }
+    const staffBreakdown = Object.values(staffMap)
+      .map((s) => ({ ...s, ingresos: round(s.ingresos), costoInsumos: round(s.costoInsumos) }))
+      .sort((a, b) => b.citasAtendidas - a.citasAtendidas);
+
+    // Detalle de Almacén: valor de costo/venta de cada producto activo, para
+    // el reporte de auditoría.
+    const almacenDetalle = activeProducts.map((p: any) => ({
+      name: p.name,
+      stock: p.stock,
+      costPrice: p.costPrice,
+      price: p.price,
+      valorCosto: round(p.stock * p.costPrice),
+      valorVenta: round(p.stock * p.price),
+    }));
+
+    // Detalle de Nómina: cada trabajador con nómina generada en el período,
+    // indicando si ya se le pagó o sigue pendiente, para poder auditar quién
+    // cobró y quién no.
+    const nominaDetalle = nominaPeriodo.map((p) => ({
+      name: p.staff.name,
+      role: p.staff.role,
+      status: p.status === 'PAID' ? 'PAGADO' : 'PENDIENTE',
+      periodStart: p.periodStart,
+      periodEnd: p.periodEnd,
+      baseSalary: round(p.baseSalary),
+      commissionsAmount: round(p.commissionsAmount),
+      totalPaid: round(p.totalPaid),
+      paidAt: p.paidAt,
+    }));
+
+    // Detalle de Insumos Consumidos en Sesión: agrupado por producto Y
+    // profesional que lo consumió (vía la cita asociada al movimiento), para
+    // poder auditar quién usó qué y a qué costo, sin listar cada sesión suelta.
+    const insumosMap: Record<string, { name: string; profesional: string; cantidad: number; costoUnitario: number; costoTotal: number }> = {};
+    for (const mov of sessionMovements) {
+      const name = mov.product?.name || 'Desconocido';
+      const profesional = (mov as any).appointment?.professional?.name || 'Sin profesional asociado';
+      const costoUnitario = mov.product?.costPrice ?? 0;
+      const key = `${name}|${profesional}`;
+      if (!insumosMap[key]) {
+        insumosMap[key] = { name, profesional, cantidad: 0, costoUnitario, costoTotal: 0 };
+      }
+      insumosMap[key].cantidad += mov.quantity;
+      insumosMap[key].costoTotal += mov.quantity * costoUnitario;
+    }
+    const insumosDetalle = Object.values(insumosMap)
+      .map((i) => ({ ...i, costoTotal: round(i.costoTotal) }))
+      .sort((a, b) => b.costoTotal - a.costoTotal);
+
+    // Detalle de Productos Vendidos por Terminal POS: agrupado por producto,
+    // con cantidad, ingreso y costo total, para auditar qué se vendió.
+    const productosMap: Record<string, { name: string; cantidad: number; ingresoTotal: number; costoTotal: number }> = {};
+    for (const inv of invoices) {
+      for (const item of inv.items) {
+        if (!item.productId) continue;
+        const name = item.description;
+        const costoUnitario = item.product?.costPrice ?? 0;
+        if (!productosMap[name]) {
+          productosMap[name] = { name, cantidad: 0, ingresoTotal: 0, costoTotal: 0 };
+        }
+        productosMap[name].cantidad += item.quantity;
+        productosMap[name].ingresoTotal += item.total;
+        productosMap[name].costoTotal += item.quantity * costoUnitario;
+      }
+    }
+    const productosVendidosDetalle = Object.values(productosMap)
+      .map((p) => ({ ...p, ingresoTotal: round(p.ingresoTotal), costoTotal: round(p.costoTotal) }))
+      .sort((a, b) => b.ingresoTotal - a.ingresoTotal);
+
+    // Detalle de Mermas: cada movimiento de pérdida individual, con motivo,
+    // para poder auditar qué pasó con cada uno. (No incluye "quién registró":
+    // InventoryMovement no guarda ese dato en el esquema actual.)
+    const mermasDetalle = mermaMovements.map((m) => ({
+      name: m.product?.name || 'Desconocido',
+      cantidad: m.quantity,
+      costoUnitario: m.product?.costPrice ?? 0,
+      costoTotal: round(m.quantity * (m.product?.costPrice ?? 0)),
+      motivo: m.notes || 'Sin motivo especificado',
+      fecha: m.createdAt,
+    }));
+
+    // Detalle de Gastos Manuales (Caja Diaria): cada egreso registrado a mano,
+    // uno por uno, con quién lo cargó — para auditar el gasto general (no
+    // incluye pagos de nómina, que van aparte en su propia sub-tabla).
+    const gastosManualesDetalle = expenses
+      .filter((e) => !e.description.includes('Pago de Nómina'))
+      .map((e) => ({
+        fecha: e.createdAt,
+        descripcion: e.description,
+        registradoPor: (e as any).user?.name || 'Desconocido',
+        monto: round(e.amount),
+      }));
+
+    // ── Desglose de INGRESOS por origen (Servicios vs. Productos) ──────────
+    // Se arma a partir de las mismas invoices/items ya cargadas, para que sea
+    // exactamente la misma fuente de datos que usa "Ingresos Netos".
+    const ingresosServiciosDetalle: { fecha: Date; folio: string; cliente: string; servicio: string; profesional: string; monto: number }[] = [];
+    const ingresosProductosDetalle: { fecha: Date; producto: string; cantidad: number; precioUnitario: number; ingresoTotal: number; vendidoPor: string }[] = [];
+    for (const inv of invoices) {
+      const cliente = (inv as any).patient?.fullName || 'Desconocido';
+      const profesional = (inv as any).appointment?.professional?.name || '—';
+      const vendidoPor = (inv as any).soldBy?.name || '—';
+      const folio = inv.id.substring(0, 8).toUpperCase();
+      for (const item of inv.items) {
+        if (item.productId) {
+          ingresosProductosDetalle.push({
+            fecha: inv.paidAt,
+            producto: item.description,
+            cantidad: item.quantity,
+            precioUnitario: round(item.unitPrice),
+            ingresoTotal: round(item.total),
+            vendidoPor,
+          });
+        } else {
+          ingresosServiciosDetalle.push({
+            fecha: inv.paidAt,
+            folio,
+            cliente,
+            servicio: item.description,
+            profesional,
+            monto: round(item.total),
+          });
+        }
+      }
+    }
+    ingresosServiciosDetalle.sort((a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime());
+    ingresosProductosDetalle.sort((a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime());
+
+    const subtotalServicios = round(ingresosServiciosDetalle.reduce((sum, r) => sum + r.monto, 0));
+    const subtotalProductos = round(ingresosProductosDetalle.reduce((sum, r) => sum + r.ingresoTotal, 0));
+    // No existe en el sistema ningún concepto de ingreso separado de
+    // servicios/productos (ni anticipos, ni propinas; y vender un "paquete"
+    // no genera ninguna Invoice — TreatmentPackage no tiene ni siquiera un
+    // campo de precio). Se deja en $0 en vez de inventar una cifra.
+    const otrosIngresosDetalle: { concepto: string; monto: number }[] = [];
+    const otrosIngresos = 0;
+
+    // Los InvoiceItem.total suman el SUBTOTAL de la factura (antes de
+    // descuento/impuesto) — no el total final ya cobrado. Para que Servicios +
+    // Productos cuadre EXACTO con Ingresos Netos (= Σ invoice.total) hay que
+    // restar los descuentos aplicados y sumar los impuestos, como líneas
+    // explícitas y auditables (no escondidas).
+    const totalDescuentos = round(invoices.reduce((sum, inv) => sum + (inv.subtotal - inv.total + inv.tax), 0));
+    const totalImpuestos = round(invoices.reduce((sum, inv) => sum + inv.tax, 0));
+
+    // ── Verificaciones de cuadre: si alguna no da exacta, no se oculta — se
+    // manda el detalle para que el PDF la muestre en rojo. ──────────────────
+    const approxEqual = (a: number, b: number) => Math.abs(round(a) - round(b)) < 0.01;
+    const totalIngresosReconciliado = round(subtotalServicios + subtotalProductos + otrosIngresos - totalDescuentos + totalImpuestos);
+    const sumaMetodosPago = round(paymentMethods.reduce((sum, pm) => sum + pm.amount, 0));
+    const sumaComponentesGasto = round(egresosGeneral + egresosPayroll + costoInsumosConsumidos + costoProductosVendidos + costoMermas);
+
+    const auditChecks = [
+      {
+        label: 'Servicios + Productos + Otros - Descuentos + Impuestos == Ingresos Netos',
+        expected: round(ingresosNetos),
+        actual: totalIngresosReconciliado,
+        ok: approxEqual(totalIngresosReconciliado, ingresosNetos),
+      },
+      {
+        label: 'Suma de métodos de pago == Ingresos Netos',
+        expected: round(ingresosNetos),
+        actual: sumaMetodosPago,
+        ok: approxEqual(sumaMetodosPago, ingresosNetos),
+      },
+      {
+        label: 'Suma de componentes de gasto == Total Gastos y Egresos',
+        expected: round(egresos),
+        actual: sumaComponentesGasto,
+        ok: approxEqual(sumaComponentesGasto, egresos),
+      },
+      {
+        label: 'Ingresos Netos - Total Gastos y Egresos == Ganancia Real',
+        expected: round(gananciaReal),
+        actual: round(ingresosNetos - egresos),
+        ok: approxEqual(ingresosNetos - egresos, gananciaReal),
+      },
+    ];
+
     res.json({
       kpis: {
         ingresosNetos: round(ingresosNetos),
         ingresosNetosDiff,
         egresos: round(egresos),
         egresosDiff,
+        gananciaReal: round(gananciaReal),
+        gananciaRealDiff,
         citasCompletadas,
         citasCompletadasDiff,
         valorAlmacen: round(valorAlmacen),
         valorAlmacenDiff
       },
+      egresosBreakdown: {
+        gastosManuales: round(egresosGeneral),
+        nomina: round(egresosPayroll),
+        insumosConsumidos: round(costoInsumosConsumidos),
+        productosVendidos: round(costoProductosVendidos),
+        mermas: round(costoMermas),
+      },
       dailyEvolution,
       paymentMethods,
       topTreatments,
       topSupplies,
-      porSucursal
+      porSucursal,
+      staffBreakdown,
+      almacenDetalle,
+      nominaDetalle,
+      insumosDetalle,
+      productosVendidosDetalle,
+      mermasDetalle,
+      gastosManualesDetalle,
+      ingresosServiciosDetalle,
+      ingresosProductosDetalle,
+      otrosIngresosDetalle,
+      ingresosBreakdown: {
+        subtotalServicios,
+        subtotalProductos,
+        otrosIngresos: round(otrosIngresos),
+        totalDescuentos,
+        totalImpuestos,
+      },
+      auditChecks,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al generar el reporte analítico general.' });

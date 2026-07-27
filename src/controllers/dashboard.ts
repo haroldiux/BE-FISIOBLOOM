@@ -8,10 +8,12 @@ import { AuthenticatedRequest } from '../middlewares/auth';
 export const getDashboard = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     if (!req.user) {
-      res.status(401).json({ error: 'Unauthorized.' });
+      res.status(401).json({ error: 'No autorizado.' });
       return;
     }
     const tenantId = req.user.tenantId;
+    const userId = req.user.id;
+    const isOwnScopeRole = req.user.role === 'PHYSIO' || req.user.role === 'AESTHETICIAN';
     const now = new Date();
 
     // Today's date range (midnight to midnight local time via UTC offsets)
@@ -37,35 +39,51 @@ export const getDashboard = async (req: AuthenticatedRequest, res: Response): Pr
     // --- Run parallel queries ---
     const [
       todayAppointmentsCount,
+      todayAppointmentsAttended,
       todayInvoices,
       activePatients,
       expiringSoonPackages,
       weeklyInvoices,
       todayAppointmentsList,
     ] = await Promise.all([
-      // Count today's appointments
+      // Count today's appointments (solo las propias para PHYSIO/AESTHETICIAN)
       prisma.appointment.count({
         where: {
           tenantId,
           dateTime: { gte: todayStart, lte: todayEnd },
+          ...(isOwnScopeRole ? { professionalId: userId } : {}),
         },
       }),
 
-      // Sum today's revenue
+      // Count today's appointments already attended (COMPLETADA)
+      prisma.appointment.count({
+        where: {
+          tenantId,
+          dateTime: { gte: todayStart, lte: todayEnd },
+          status: 'COMPLETADA',
+          ...(isOwnScopeRole ? { professionalId: userId } : {}),
+        },
+      }),
+
+      // Sum today's revenue (solo lo facturado por citas propias para PHYSIO/AESTHETICIAN)
       prisma.invoice.findMany({
         where: {
           tenantId,
           paidAt: { gte: todayStart, lte: todayEnd },
           status: 'PAGADO',
+          ...(isOwnScopeRole ? { appointment: { professionalId: userId } } : {}),
         },
         select: { total: true },
       }),
 
-      // Count active patients
+      // Count active patients (solo los propios para PHYSIO/AESTHETICIAN)
       prisma.patient.count({
         where: {
           tenantId,
           isActive: true,
+          ...(isOwnScopeRole
+            ? { OR: [{ appointments: { some: { professionalId: userId } } }, { createdById: userId }] }
+            : {}),
         },
       }),
 
@@ -78,12 +96,13 @@ export const getDashboard = async (req: AuthenticatedRequest, res: Response): Pr
         },
       }),
 
-      // Weekly invoices with paidAt date
+      // Weekly invoices with paidAt date (misma regla: solo lo propio para PHYSIO/AESTHETICIAN)
       prisma.invoice.findMany({
         where: {
           tenantId,
           paidAt: { gte: weekStart, lte: weekEnd },
           status: 'PAGADO',
+          ...(isOwnScopeRole ? { appointment: { professionalId: userId } } : {}),
         },
         select: { total: true, paidAt: true },
       }),
@@ -93,6 +112,7 @@ export const getDashboard = async (req: AuthenticatedRequest, res: Response): Pr
         where: {
           tenantId,
           dateTime: { gte: todayStart, lte: todayEnd },
+          ...(isOwnScopeRole ? { professionalId: userId } : {}),
         },
         include: {
           patient: { select: { fullName: true } },
@@ -145,13 +165,44 @@ export const getDashboard = async (req: AuthenticatedRequest, res: Response): Pr
       };
     });
 
+    // Para el Súper Admin (viendo "Todas las Sucursales"): resumen de ganancias
+    // e info clave de CADA sucursal, para poder comparar de un vistazo.
+    let branchesSummary: any[] | undefined;
+    if (req.user.role === 'SUPER_ADMIN') {
+      const branches = await prisma.branch.findMany({ where: { tenantId, isActive: true } });
+      branchesSummary = await Promise.all(
+        branches.map(async (branch) => {
+          const [branchInvoices, branchAppointmentsToday, branchActivePatients] = await Promise.all([
+            prisma.invoice.findMany({
+              where: { tenantId, branchId: branch.id, paidAt: { gte: todayStart, lte: todayEnd }, status: 'PAGADO' },
+              select: { total: true },
+            }),
+            prisma.appointment.count({
+              where: { tenantId, branchId: branch.id, dateTime: { gte: todayStart, lte: todayEnd } },
+            }),
+            prisma.patient.count({ where: { tenantId, branchId: branch.id, isActive: true } }),
+          ]);
+          const branchRevenue = branchInvoices.reduce((sum, inv) => sum + inv.total, 0);
+          return {
+            branchId: branch.id,
+            branchName: branch.name,
+            todayRevenue: Math.round(branchRevenue * 100) / 100,
+            todayAppointments: branchAppointmentsToday,
+            activePatients: branchActivePatients,
+          };
+        })
+      );
+    }
+
     res.json({
       todayAppointments: todayAppointmentsCount,
+      todayAppointmentsAttended,
       todayRevenue: Math.round(todayRevenue * 100) / 100,
       activePatients,
       packagesExpiringSoon: expiringSoonPackages,
       weeklyRevenue,
       todayAppointmentsList: todayAppointmentsListFormatted,
+      branchesSummary,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error fetching dashboard data.' });

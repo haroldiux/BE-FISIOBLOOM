@@ -121,7 +121,7 @@ export const handleWhatsAppWebhook = async (req: any, res: Response): Promise<vo
     const { phone, text } = req.body;
 
     if (!phone || !text) {
-      res.status(400).json({ error: 'phone and text are required.' });
+      res.status(400).json({ error: 'phone y text son obligatorios.' });
       return;
     }
 

@@ -10,23 +10,23 @@ export const register = async (req: AuthenticatedRequest, res: Response): Promis
     const { email, password, name, role, tenantName, tenantSlug, branchId } = req.body;
 
     if (!email || !password || !name || !role) {
-      res.status(400).json({ error: 'All fields (email, password, name, role) are required.' });
+      res.status(400).json({ error: 'Todos los campos (email, password, name, role) son obligatorios.' });
       return;
     }
 
     // Validate role
     if (!Object.values(Role).includes(role as Role)) {
-      res.status(400).json({ error: `Invalid role. Allowed roles are: ${Object.values(Role).join(', ')}` });
+      res.status(400).json({ error: `Rol inválido. Roles permitidos: ${Object.values(Role).join(', ')}` });
       return;
     }
 
     // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
+    const existingUser = await prisma.user.findFirst({
       where: { email },
     });
 
     if (existingUser) {
-      res.status(400).json({ error: 'User with this email already exists.' });
+      res.status(400).json({ error: 'Ya existe un usuario con ese email.' });
       return;
     }
 
@@ -35,7 +35,7 @@ export const register = async (req: AuthenticatedRequest, res: Response): Promis
     // Si no está autenticado, permitimos crear un nuevo Tenant (registro inicial de SaaS)
     if (!tenantId) {
       if (!tenantName || !tenantSlug) {
-        res.status(400).json({ error: 'tenantName and tenantSlug are required for new tenant registration.' });
+        res.status(400).json({ error: 'tenantName y tenantSlug son obligatorios para registrar una nueva clínica.' });
         return;
       }
 
@@ -44,7 +44,7 @@ export const register = async (req: AuthenticatedRequest, res: Response): Promis
       });
 
       if (existingTenant) {
-        res.status(400).json({ error: 'Tenant with this slug already exists.' });
+        res.status(400).json({ error: 'Ya existe una clínica con ese slug.' });
         return;
       }
 
@@ -121,25 +121,57 @@ export const login = async (req: AuthenticatedRequest, res: Response): Promise<v
     const { email, password } = req.body;
 
     if (!email || !password) {
-      res.status(400).json({ error: 'Email and password are required.' });
+      res.status(400).json({ error: 'El email y la contraseña son obligatorios.' });
       return;
     }
 
     // Find user (búsqueda global ya que el contexto aún no tiene tenantId)
-    const user = await prisma.user.findUnique({
+    const user = await prisma.user.findFirst({
       where: { email },
     });
 
     if (!user || !user.isActive) {
-      res.status(401).json({ error: 'Invalid email or password.' });
+      res.status(401).json({ error: 'Email o contraseña inválidos.' });
+      return;
+    }
+
+    // Cuenta bloqueada por 3 intentos fallidos seguidos — solo un ADMIN puede
+    // desbloquearla (ver PATCH /professionals/:id/unlock). No se cuenta este
+    // intento como uno más: ya está bloqueada, no hace falta seguir sumando.
+    if (user.accountLocked) {
+      res.status(403).json({ error: 'Tu cuenta fue bloqueada por 3 intentos fallidos de inicio de sesión. Comunicate con el administrador para que restablezca tu acceso.' });
       return;
     }
 
     // Check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      res.status(401).json({ error: 'Invalid email or password.' });
+      const newAttempts = user.failedLoginAttempts + 1;
+      const shouldLock = newAttempts >= 3;
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          failedLoginAttempts: newAttempts,
+          accountLocked: shouldLock,
+        },
+      });
+
+      if (shouldLock) {
+        res.status(403).json({ error: 'Tu cuenta fue bloqueada por 3 intentos fallidos de inicio de sesión. Comunicate con el administrador para que restablezca tu acceso.' });
+        return;
+      }
+
+      res.status(401).json({ error: 'Email o contraseña inválidos.' });
       return;
+    }
+
+    // Login correcto: si venía con intentos fallidos previos sin llegar a
+    // bloquearse, se limpia el contador.
+    if (user.failedLoginAttempts > 0) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { failedLoginAttempts: 0 },
+      });
     }
 
     // Generate JWT including tenantId and branchId
@@ -174,7 +206,7 @@ export const login = async (req: AuthenticatedRequest, res: Response): Promise<v
 export const me = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     if (!req.user) {
-      res.status(401).json({ error: 'Unauthorized.' });
+      res.status(401).json({ error: 'No autorizado.' });
       return;
     }
 
@@ -194,7 +226,7 @@ export const me = async (req: AuthenticatedRequest, res: Response): Promise<void
     });
 
     if (!user) {
-      res.status(404).json({ error: 'User not found.' });
+      res.status(404).json({ error: 'Usuario no encontrado.' });
       return;
     }
 
@@ -207,7 +239,7 @@ export const me = async (req: AuthenticatedRequest, res: Response): Promise<void
 export const updateProfile = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     if (!req.user) {
-      res.status(401).json({ error: 'Unauthorized.' });
+      res.status(401).json({ error: 'No autorizado.' });
       return;
     }
 

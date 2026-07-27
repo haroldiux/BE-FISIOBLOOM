@@ -3,6 +3,7 @@ import { PaymentMethod, InvoiceStatus, MovementType, CashStatus } from '@prisma/
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
 import { FiscalInvoiceService } from '../services/fiscalInvoice';
+import { boliviaStartOfDateOnly, boliviaEndOfDateOnly } from '../services/appointment.service';
 
 export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
@@ -65,7 +66,7 @@ export const getById = async (req: AuthenticatedRequest, res: Response): Promise
     });
 
     if (!invoice) {
-      res.status(404).json({ error: 'Invoice not found.' });
+      res.status(404).json({ error: 'Factura no encontrada.' });
       return;
     }
 
@@ -77,12 +78,13 @@ export const getById = async (req: AuthenticatedRequest, res: Response): Promise
 
 export const create = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { id, patientId, appointmentId, items, subtotal, tax, total, paymentMethod, reference, status, paidAt, couponCode, isFiscal, taxId, clientName, fiscalProvider } = req.body;
+    const { id, patientId, appointmentId, additionalAppointmentIds, items, subtotal, tax, total, paymentMethod, reference, status, paidAt, couponCode, isFiscal, taxId, clientName, fiscalProvider } = req.body;
     const userId = req.user?.id;
     const tenantId = req.user?.tenantId;
+    const branchId = req.user?.branchId;
 
     if (!patientId || !items || !Array.isArray(items) || items.length === 0 || !paymentMethod || total === undefined) {
-      res.status(400).json({ error: 'patientId, items, paymentMethod, and total are required.' });
+      res.status(400).json({ error: 'patientId, items, paymentMethod y total son obligatorios.' });
       return;
     }
 
@@ -116,19 +118,19 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
     // Verify patient exists in this tenant
     const patient = await prisma.patient.findFirst({ where: { id: patientId, tenantId } });
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found in this clinic.' });
+      res.status(404).json({ error: 'Paciente no encontrado en esta clínica.' });
       return;
     }
 
     // Validate paymentMethod enum
     if (!Object.values(PaymentMethod).includes(paymentMethod as PaymentMethod)) {
-      res.status(400).json({ error: `Invalid paymentMethod. Valid values: ${Object.values(PaymentMethod).join(', ')}` });
+      res.status(400).json({ error: `Método de pago inválido. Valores permitidos: ${Object.values(PaymentMethod).join(', ')}` });
       return;
     }
 
     // Validate status if provided
     if (status && !Object.values(InvoiceStatus).includes(status as InvoiceStatus)) {
-      res.status(400).json({ error: `Invalid status. Valid values: ${Object.values(InvoiceStatus).join(', ')}` });
+      res.status(400).json({ error: `Estado inválido. Valores permitidos: ${Object.values(InvoiceStatus).join(', ')}` });
       return;
     }
 
@@ -144,6 +146,27 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
       });
       for (const p of dbProducts) {
         productsMap[p.id] = p;
+      }
+    }
+
+    // No se puede vender más stock del que realmente hay disponible.
+    const requestedQtyByProduct: Record<string, number> = {};
+    for (const item of items) {
+      if (item.productId) {
+        requestedQtyByProduct[item.productId] = (requestedQtyByProduct[item.productId] || 0) + Number(item.quantity ?? 1);
+      }
+    }
+    for (const [productId, requestedQty] of Object.entries(requestedQtyByProduct)) {
+      const product = productsMap[productId];
+      if (!product) {
+        res.status(404).json({ error: 'Uno de los productos del carrito no existe en esta clínica.' });
+        return;
+      }
+      if (product.stock < requestedQty) {
+        res.status(400).json({
+          error: `No hay suficiente stock de "${product.name}". Disponible: ${product.stock}, solicitado: ${requestedQty}.`,
+        });
+        return;
       }
     }
 
@@ -169,7 +192,7 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
         }
 
         const now = new Date();
-        if (now < new Date(coupon.startDate) || now > new Date(coupon.endDate)) {
+        if (now < boliviaStartOfDateOnly(new Date(coupon.startDate)) || now > boliviaEndOfDateOnly(new Date(coupon.endDate))) {
           throw new Error('El cupón ha expirado o aún no está vigente.');
         }
 
@@ -222,6 +245,8 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
           id: id ? String(id) : undefined,
           patientId,
           appointmentId: appointmentId || null,
+          additionalAppointmentIds: Array.isArray(additionalAppointmentIds) ? additionalAppointmentIds : [],
+          soldById: userId,
           subtotal: currentSubtotal,
           tax: appliedTax,
           total: finalTotal,
@@ -252,10 +277,19 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
       // Reduce stock for products used in invoice items
       for (const item of items) {
         if (item.productId && productsMap[item.productId]) {
+          const qty = Number(item.quantity ?? 1);
           await tx.product.update({
             where: { id: item.productId, tenantId },
-            data: { stock: { decrement: Number(item.quantity ?? 1) } },
+            data: { stock: { decrement: qty } },
           });
+          // Mantener sincronizado el stock por sucursal (el que usa Terminal POS
+          // para bloquear ventas): si no hay fila para esta sucursal, no hace nada.
+          if (branchId) {
+            await tx.branchStock.updateMany({
+              where: { productId: item.productId, branchId, tenantId },
+              data: { stock: { decrement: qty } },
+            });
+          }
         }
       }
 
@@ -314,7 +348,7 @@ export const getPatientInvoices = async (req: AuthenticatedRequest, res: Respons
 
     const patient = await prisma.patient.findFirst({ where: { id: String(patientId), tenantId } });
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found in this clinic.' });
+      res.status(404).json({ error: 'Paciente no encontrado en esta clínica.' });
       return;
     }
 
@@ -347,17 +381,17 @@ export const updateInvoice = async (req: AuthenticatedRequest, res: Response): P
     });
 
     if (!existing) {
-      res.status(404).json({ error: 'Invoice not found.' });
+      res.status(404).json({ error: 'Factura no encontrada.' });
       return;
     }
 
     if (paymentMethod && !Object.values(PaymentMethod).includes(paymentMethod as PaymentMethod)) {
-      res.status(400).json({ error: `Invalid paymentMethod. Valid values: ${Object.values(PaymentMethod).join(', ')}` });
+      res.status(400).json({ error: `Método de pago inválido. Valores permitidos: ${Object.values(PaymentMethod).join(', ')}` });
       return;
     }
 
     if (status && !Object.values(InvoiceStatus).includes(status as InvoiceStatus)) {
-      res.status(400).json({ error: `Invalid status. Valid values: ${Object.values(InvoiceStatus).join(', ')}` });
+      res.status(400).json({ error: `Estado inválido. Valores permitidos: ${Object.values(InvoiceStatus).join(', ')}` });
       return;
     }
 
@@ -394,7 +428,7 @@ export const voidInvoice = async (req: AuthenticatedRequest, res: Response): Pro
     });
 
     if (!existing) {
-      res.status(404).json({ error: 'Invoice not found.' });
+      res.status(404).json({ error: 'Factura no encontrada.' });
       return;
     }
 

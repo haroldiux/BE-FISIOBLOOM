@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import { Role } from '@prisma/client';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
 
@@ -30,23 +31,48 @@ export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<
 
 export const create = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { name, category, price, stock, unit } = req.body;
+    const { name, category, price, costPrice, stock, unit } = req.body;
     const tenantId = req.user!.tenantId;
+    const branchId = req.user!.branchId;
 
     if (!name || !category || price === undefined) {
-      res.status(400).json({ error: 'name, category, and price are required.' });
+      res.status(400).json({ error: 'name, category y price son obligatorios.' });
       return;
     }
 
-    const product = await prisma.product.create({
-      data: {
-        name,
-        category,
-        price: Number(price),
-        stock: stock !== undefined ? Number(stock) : 0,
-        unit: unit || 'unidad',
-        tenantId,
-      },
+    if (!branchId) {
+      res.status(400).json({ error: 'No hay una sucursal activa seleccionada para crear el producto.' });
+      return;
+    }
+
+    const initialStock = stock !== undefined ? Number(stock) : 0;
+
+    const product = await prisma.$transaction(async (tx) => {
+      const created = await tx.product.create({
+        data: {
+          name,
+          category,
+          price: Number(price),
+          costPrice: costPrice !== undefined ? Number(costPrice) : 0,
+          stock: initialStock,
+          unit: unit || 'unidad',
+          tenantId,
+          branchId,
+        },
+      });
+
+      // El stock por sucursal (el que usa Terminal POS para saber qué hay
+      // disponible) se crea junto con el producto, ya en su propia sucursal.
+      await tx.branchStock.create({
+        data: {
+          tenantId,
+          branchId,
+          productId: created.id,
+          stock: initialStock,
+        },
+      });
+
+      return created;
     });
 
     res.status(201).json({ message: 'Product created successfully.', product });
@@ -58,25 +84,39 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
 export const update = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const { name, category, price, stock, unit, isActive } = req.body;
+    const { name, category, price, costPrice, stock, unit, isActive } = req.body;
     const tenantId = req.user!.tenantId;
 
     const existing = await prisma.product.findFirst({ where: { id: String(id), tenantId } });
     if (!existing) {
-      res.status(404).json({ error: 'Product not found.' });
+      res.status(404).json({ error: 'Producto no encontrado.' });
       return;
     }
 
-    const product = await prisma.product.update({
-      where: { id: String(id), tenantId },
-      data: {
-        ...(name !== undefined && { name }),
-        ...(category !== undefined && { category }),
-        ...(price !== undefined && { price: Number(price) }),
-        ...(stock !== undefined && { stock: Number(stock) }),
-        ...(unit !== undefined && { unit }),
-        ...(isActive !== undefined && { isActive }),
-      },
+    const product = await prisma.$transaction(async (tx) => {
+      const updated = await tx.product.update({
+        where: { id: String(id), tenantId },
+        data: {
+          ...(name !== undefined && { name }),
+          ...(category !== undefined && { category }),
+          ...(price !== undefined && { price: Number(price) }),
+          ...(costPrice !== undefined && { costPrice: Number(costPrice) }),
+          ...(stock !== undefined && { stock: Number(stock) }),
+          ...(unit !== undefined && { unit }),
+          ...(isActive !== undefined && { isActive }),
+        },
+      });
+
+      // Mantener sincronizado el stock por sucursal si se edita el stock acá
+      // directamente (fuera del flujo de "Ajustar Stock").
+      if (stock !== undefined) {
+        await tx.branchStock.updateMany({
+          where: { productId: String(id), branchId: existing.branchId },
+          data: { stock: Number(stock) },
+        });
+      }
+
+      return updated;
     });
 
     res.json({ message: 'Product updated successfully.', product });
@@ -92,7 +132,7 @@ export const remove = async (req: AuthenticatedRequest, res: Response): Promise<
 
     const existing = await prisma.product.findFirst({ where: { id: String(id), tenantId } });
     if (!existing) {
-      res.status(404).json({ error: 'Product not found.' });
+      res.status(404).json({ error: 'Producto no encontrado.' });
       return;
     }
 
@@ -185,18 +225,18 @@ export const adjustStock = async (req: AuthenticatedRequest, res: Response): Pro
     const tenantId = req.user!.tenantId;
 
     if (quantity === undefined || !type) {
-      res.status(400).json({ error: 'quantity and type are required.' });
+      res.status(400).json({ error: 'quantity y type son obligatorios.' });
       return;
     }
 
     if (type !== 'STOCK_IN' && type !== 'STOCK_OUT') {
-      res.status(400).json({ error: 'type must be either STOCK_IN or STOCK_OUT.' });
+      res.status(400).json({ error: 'type debe ser STOCK_IN o STOCK_OUT.' });
       return;
     }
 
     const qty = Number(quantity);
     if (isNaN(qty) || qty <= 0) {
-      res.status(400).json({ error: 'quantity must be a positive number.' });
+      res.status(400).json({ error: 'quantity debe ser un número positivo.' });
       return;
     }
 
@@ -236,13 +276,20 @@ export const adjustStock = async (req: AuthenticatedRequest, res: Response): Pro
         }
       });
 
+      // Mantener sincronizado el stock por sucursal (el que usa Terminal POS
+      // para bloquear ventas): si no hay fila para esta sucursal, no hace nada.
+      await tx.branchStock.updateMany({
+        where: { productId: String(id), branchId: product.branchId, tenantId },
+        data: { stock: { increment: stockDiff } },
+      });
+
       return { product: updatedProduct, movement };
     });
 
     res.json(result);
   } catch (error: any) {
     if (error.message === 'PRODUCT_NOT_FOUND') {
-      res.status(404).json({ error: 'Product not found.' });
+      res.status(404).json({ error: 'Producto no encontrado.' });
     } else if (error.message === 'STOCK_NEGATIVE') {
       res.status(400).json({ error: 'El stock resultante no puede ser negativo.' });
     } else {
@@ -257,8 +304,20 @@ export const getBranchStock = async (req: AuthenticatedRequest, res: Response): 
     const { branchId, productId } = req.query;
 
     const where: any = { tenantId };
-    if (branchId) {
-      where.branchId = String(branchId);
+    if (req.user!.role === Role.SUPER_ADMIN) {
+      // Solo el Super Admin puede pedir explícitamente otra sucursal (o todas).
+      // Si no manda un branchId por query, respetamos la sucursal que haya
+      // elegido vía el selector de sucursales (cabecera X-Branch-ID / tenant context).
+      const contextBranchId = (req as any).branchId as string | undefined;
+      if (branchId) {
+        where.branchId = String(branchId);
+      } else if (contextBranchId) {
+        where.branchId = contextBranchId;
+      }
+    } else {
+      // Cualquier otro rol queda siempre atado a su propia sucursal, sin
+      // importar qué venga en el query param.
+      where.branchId = req.user!.branchId;
     }
     if (productId) {
       where.productId = String(productId);
@@ -287,14 +346,22 @@ export const transferStock = async (req: AuthenticatedRequest, res: Response): P
     const { productId, sourceBranchId, destinationBranchId, quantity } = req.body;
 
     if (!productId || !sourceBranchId || !destinationBranchId || quantity === undefined) {
-      res.status(400).json({ error: 'productId, sourceBranchId, destinationBranchId, and quantity are required.' });
+      res.status(400).json({ error: 'productId, sourceBranchId, destinationBranchId y quantity son obligatorios.' });
       return;
     }
 
     const qty = Number(quantity);
     if (isNaN(qty) || qty <= 0) {
-      res.status(400).json({ error: 'quantity must be a positive number.' });
+      res.status(400).json({ error: 'quantity debe ser un número positivo.' });
       return;
+    }
+
+    if (req.user!.role !== Role.SUPER_ADMIN) {
+      const ownBranchId = req.user!.branchId;
+      if (sourceBranchId !== ownBranchId && destinationBranchId !== ownBranchId) {
+        res.status(403).json({ error: 'Solo podés transferir stock desde o hacia tu propia sucursal.' });
+        return;
+      }
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -410,7 +477,7 @@ export const transferStock = async (req: AuthenticatedRequest, res: Response): P
     res.json({ message: 'Stock transferred successfully.', ...result });
   } catch (error: any) {
     if (error.message === 'BRANCH_NOT_FOUND') {
-      res.status(400).json({ error: 'Source or destination branch not found.' });
+      res.status(400).json({ error: 'La sucursal de origen o destino no fue encontrada.' });
     } else if (error.message === 'INSUFFICIENT_STOCK') {
       res.status(400).json({ error: 'El stock en la sucursal de origen es insuficiente.' });
     } else {

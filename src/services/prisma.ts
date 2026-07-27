@@ -72,7 +72,7 @@ const prisma = basePrisma.$extends({
           return query(args);
         }
 
-        const modelsWithBranch = ['User', 'Patient', 'Appointment', 'Invoice', 'CashRegister', 'InventoryMovement', 'Branch'];
+        const modelsWithBranch = ['User', 'Patient', 'Appointment', 'Invoice', 'CashRegister', 'InventoryMovement', 'Branch', 'Product', 'Service', 'ConsentDocument', 'TreatmentPackage'];
         const anyArgs = args as any;
 
         // 1. Filtrar lecturas generales por tenantId y branchId

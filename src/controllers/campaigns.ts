@@ -54,7 +54,7 @@ export const createCampaign = async (req: AuthenticatedRequest, res: Response): 
         tenantId,
         services: {
           create: serviceIds && Array.isArray(serviceIds)
-            ? serviceIds.map((id: string) => ({ serviceId: id }))
+            ? serviceIds.map((id: string) => ({ serviceId: id, tenantId }))
             : []
         }
       },

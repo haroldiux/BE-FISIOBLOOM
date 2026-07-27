@@ -3,8 +3,8 @@ import prisma from '../services/prisma';
 
 export async function getOnboardingProgress(req: Request, res: Response): Promise<void> {
   try {
-    const userId = (req as any).userId;
-    if (!userId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const userId = (req as any).user?.id;
+    if (!userId) { res.status(401).json({ error: 'No autorizado.' }); return; }
 
     const progress = await prisma.onboardingProgress.findUnique({
       where: { userId },
@@ -13,14 +13,14 @@ export async function getOnboardingProgress(req: Request, res: Response): Promis
     res.json(progress ?? null);
   } catch (error) {
     console.error('Error getting onboarding progress:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor.' });
   }
 }
 
 export async function upsertOnboardingProgress(req: Request, res: Response): Promise<void> {
   try {
-    const userId = (req as any).userId;
-    if (!userId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const userId = (req as any).user?.id;
+    if (!userId) { res.status(401).json({ error: 'No autorizado.' }); return; }
 
     const { role, currentPhase, currentStep, completed, dismissed } = req.body;
 
@@ -46,6 +46,6 @@ export async function upsertOnboardingProgress(req: Request, res: Response): Pro
     res.json(progress);
   } catch (error) {
     console.error('Error saving onboarding progress:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor.' });
   }
 }

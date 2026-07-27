@@ -3,177 +3,15 @@ import { AppointmentStatus, Role } from '@prisma/client';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
 import { scheduleAppointmentReminder } from '../services/reminderQueue';
-import { normalizeToBoliviaTime, validateAppointmentDate, validateAppointmentStatus } from '../services/appointment.service';
-
-
-// Helper: Check if appointment fits in professional's working hours
-const checkWorkingHours = async (professionalId: string, dateTime: Date, duration: number, tenantId: string): Promise<{ valid: boolean; error?: string }> => {
-  const professional = await prisma.user.findUnique({
-    where: { id: professionalId, tenantId },
-    select: { workingHours: true },
-  });
-
-  if (!professional) {
-    return { valid: false, error: 'Professional not found.' };
-  }
-
-  if (!professional.workingHours) {
-    return { valid: false, error: 'Professional working hours are not configured.' };
-  }
-
-  const workingHours = professional.workingHours as any;
-  const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-  const dayName = daysOfWeek[dateTime.getDay()];
-
-  const daySchedule = workingHours[dayName];
-  if (!daySchedule) {
-    return { valid: false, error: `Professional does not work on ${dayName}.` };
-  }
-
-  // Parse appointment start/end in minutes since midnight
-  const startMinutes = dateTime.getHours() * 60 + dateTime.getMinutes();
-  const endMinutes = startMinutes + duration;
-
-  // Parse schedule start/end in minutes since midnight
-  const [startH, startM] = daySchedule.start.split(':').map(Number);
-  const [endH, endM] = daySchedule.end.split(':').map(Number);
-  const workStartMinutes = startH * 60 + startM;
-  const workEndMinutes = endH * 60 + endM;
-
-  if (startMinutes < workStartMinutes || endMinutes > workEndMinutes) {
-    return {
-      valid: false,
-      error: `Appointment is outside working hours (${daySchedule.start} - ${daySchedule.end}).`,
-    };
-  }
-
-  return { valid: true };
-};
-
-// Helper: Check if professional has active schedule exceptions on the appointment date/time
-const checkScheduleExceptions = async (
-  professionalId: string,
-  dateTime: Date,
-  duration: number,
-  tenantId: string
-): Promise<{ valid: boolean; error?: string }> => {
-  const startOfDay = new Date(dateTime);
-  startOfDay.setHours(0, 0, 0, 0);
-
-  const endOfDay = new Date(dateTime);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  const exceptions = await prisma.scheduleException.findMany({
-    where: {
-      professionalId,
-      tenantId,
-      date: {
-        gte: startOfDay,
-        lte: endOfDay,
-      },
-    },
-  });
-
-  const apptStartMinutes = dateTime.getHours() * 60 + dateTime.getMinutes();
-  const apptEndMinutes = apptStartMinutes + duration;
-
-  for (const exception of exceptions) {
-    if (exception.isAvailable === false) {
-      if (!exception.startTime || !exception.endTime) {
-        // Blocks the whole day
-        return {
-          valid: false,
-          error: 'El profesional no está disponible en este horario debido a una excepción/licencia.',
-        };
-      } else {
-        const [excStartH, excStartM] = exception.startTime.split(':').map(Number);
-        const [excEndH, excEndM] = exception.endTime.split(':').map(Number);
-        const excStartMinutes = excStartH * 60 + excStartM;
-        const excEndMinutes = excEndH * 60 + excEndM;
-
-        // Overlap condition
-        if (apptStartMinutes < excEndMinutes && excStartMinutes < apptEndMinutes) {
-          return {
-            valid: false,
-            error: 'El profesional no está disponible en este horario debido a una excepción/licencia.',
-          };
-        }
-      }
-    }
-  }
-
-  return { valid: true };
-};
-
-// Helper: Check if professional has overlapping appointments (active status: PENDIENTE, CONFIRMADA, COMPLETADA)
-const checkProfessionalCollision = async (
-  professionalId: string,
-  dateTime: Date,
-  duration: number,
-  tenantId: string,
-  excludeAppointmentId?: string
-): Promise<boolean> => {
-  const newStart = dateTime.getTime();
-  const newEnd = newStart + duration * 60 * 1000;
-
-  const existingAppointments = await prisma.appointment.findMany({
-    where: {
-      tenantId,
-      professionalId,
-      status: {
-        in: [AppointmentStatus.PENDIENTE, AppointmentStatus.CONFIRMADA, AppointmentStatus.COMPLETADA],
-      },
-      id: excludeAppointmentId ? { not: excludeAppointmentId } : undefined,
-    },
-  });
-
-  for (const appt of existingAppointments) {
-    const extStart = new Date(appt.dateTime).getTime();
-    const extEnd = extStart + appt.duration * 60 * 1000;
-
-    // Overlap condition
-    if (newStart < extEnd && extStart < newEnd) {
-      return true;
-    }
-  }
-
-  return false;
-};
-
-// Helper: Check if cabin has overlapping appointments (active status: PENDIENTE, CONFIRMADA, COMPLETADA)
-const checkCabinCollision = async (
-  cabin: string,
-  dateTime: Date,
-  duration: number,
-  tenantId: string,
-  excludeAppointmentId?: string
-): Promise<boolean> => {
-  const newStart = dateTime.getTime();
-  const newEnd = newStart + duration * 60 * 1000;
-
-  const existingAppointments = await prisma.appointment.findMany({
-    where: {
-      tenantId,
-      cabin,
-      status: {
-        in: [AppointmentStatus.PENDIENTE, AppointmentStatus.CONFIRMADA, AppointmentStatus.COMPLETADA],
-      },
-      id: excludeAppointmentId ? { not: excludeAppointmentId } : undefined,
-    },
-  });
-
-  for (const appt of existingAppointments) {
-    const extStart = new Date(appt.dateTime).getTime();
-    const extEnd = extStart + appt.duration * 60 * 1000;
-
-    // Overlap condition
-    if (newStart < extEnd && extStart < newEnd) {
-      return true;
-    }
-  }
-
-  return false;
-};
+import {
+  normalizeToBoliviaTime,
+  validateAppointmentDate,
+  validateAppointmentStatus,
+  checkWorkingHours,
+  checkScheduleExceptions,
+  checkProfessionalCollision,
+  checkCabinCollision,
+} from '../services/appointment.service';
 
 export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
@@ -224,11 +62,42 @@ export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<
         },
         service: true,
         sessionDetail: true,
+        invoice: {
+          select: { id: true },
+        },
       },
       orderBy: {
         dateTime: 'asc',
       },
     });
+
+    // Una factura solo puede apuntar a UNA cita vía appointmentId (relación
+    // 1:1), pero puede cobrar VARIAS a la vez (ver additionalAppointmentIds
+    // en Invoice) — sin este parche, esas otras citas seguirían apareciendo
+    // como "sin cobrar" para siempre aunque ya se hayan pagado juntas en la
+    // misma venta.
+    const appointmentsWithoutInvoice = appointments.filter((a) => !a.invoice);
+    if (appointmentsWithoutInvoice.length > 0) {
+      const invoicesWithAdditional = await prisma.invoice.findMany({
+        where: {
+          tenantId: req.user!.tenantId,
+          additionalAppointmentIds: { hasSome: appointmentsWithoutInvoice.map((a) => a.id) },
+        },
+        select: { id: true, additionalAppointmentIds: true },
+      });
+      const invoiceIdByAppointmentId = new Map<string, string>();
+      for (const inv of invoicesWithAdditional) {
+        for (const apptId of inv.additionalAppointmentIds) {
+          invoiceIdByAppointmentId.set(apptId, inv.id);
+        }
+      }
+      for (const appt of appointmentsWithoutInvoice) {
+        const invoiceId = invoiceIdByAppointmentId.get(appt.id);
+        if (invoiceId) {
+          (appt as any).invoice = { id: invoiceId };
+        }
+      }
+    }
 
     res.json(appointments);
   } catch (error: any) {
@@ -239,10 +108,10 @@ export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<
 export const create = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const tenantId = req.user!.tenantId;
-    const { id, patientId, professionalId, serviceId, dateTime, duration, status, cabin } = req.body;
+    const { id, patientId, professionalId, serviceId, additionalServiceIds, dateTime, duration, status, cabin, notes } = req.body;
 
     if (!patientId || !professionalId || !dateTime || !duration) {
-      res.status(400).json({ error: 'patientId, professionalId, dateTime, and duration are required.' });
+      res.status(400).json({ error: 'patientId, professionalId, dateTime y duration son obligatorios.' });
       return;
     }
 
@@ -288,21 +157,21 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
     }
 
     // 1. Check working hours availability
-    const scheduleCheck = await checkWorkingHours(professionalId, apptDate, Number(duration), tenantId);
+    const scheduleCheck = await checkWorkingHours(prisma, professionalId, apptDate, Number(duration), tenantId);
     if (!scheduleCheck.valid) {
       res.status(400).json({ error: scheduleCheck.error });
       return;
     }
 
     // 1.5 Check schedule exceptions
-    const exceptionCheck = await checkScheduleExceptions(professionalId, apptDate, Number(duration), tenantId);
+    const exceptionCheck = await checkScheduleExceptions(prisma, professionalId, apptDate, Number(duration), tenantId);
     if (!exceptionCheck.valid) {
       res.status(400).json({ error: exceptionCheck.error });
       return;
     }
 
     // 2. Check for professional collision
-    const professionalCollision = await checkProfessionalCollision(professionalId, apptDate, Number(duration), tenantId);
+    const professionalCollision = await checkProfessionalCollision(prisma, professionalId, apptDate, Number(duration), tenantId);
     if (professionalCollision) {
       res.status(400).json({ error: 'El profesional ya cuenta con una cita en ese horario' });
       return;
@@ -310,7 +179,7 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
 
     // 3. Check for cabin collision
     if (cabin) {
-      const cabinCollision = await checkCabinCollision(cabin, apptDate, Number(duration), tenantId);
+      const cabinCollision = await checkCabinCollision(prisma, cabin, apptDate, Number(duration), tenantId);
       if (cabinCollision) {
         res.status(400).json({ error: 'La cabina ya está ocupada en ese horario' });
         return;
@@ -325,10 +194,12 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
         patientId,
         professionalId,
         serviceId: serviceId || null,
+        additionalServiceIds: Array.isArray(additionalServiceIds) ? additionalServiceIds : [],
         dateTime: apptDate,
         duration: Number(duration),
         status: (status as AppointmentStatus) || AppointmentStatus.PENDIENTE,
         cabin: cabin || null,
+        notes: notes || null,
       },
       include: {
         patient: {
@@ -363,14 +234,14 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
   try {
     const tenantId = req.user!.tenantId;
     const { id } = req.params;
-    const { professionalId, dateTime, duration, status, cabin } = req.body;
+    const { professionalId, serviceId, additionalServiceIds, dateTime, duration, status, cabin, notes } = req.body;
 
     const existingAppt = await prisma.appointment.findUnique({
       where: { id: id as string, tenantId },
     });
 
     if (!existingAppt) {
-      res.status(404).json({ error: 'Appointment not found.' });
+      res.status(404).json({ error: 'Cita no encontrada.' });
       return;
     }
 
@@ -388,20 +259,21 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
 
     // Validate working hours and overlap only if date, time, duration, professional, or cabin changed
     if (professionalId || dateTime || duration !== undefined || cabin !== undefined) {
-      const scheduleCheck = await checkWorkingHours(targetProfessionalId, targetDateTime, targetDuration, tenantId);
+      const scheduleCheck = await checkWorkingHours(prisma, targetProfessionalId, targetDateTime, targetDuration, tenantId);
       if (!scheduleCheck.valid) {
         res.status(400).json({ error: scheduleCheck.error });
         return;
       }
 
       // Check schedule exceptions
-      const exceptionCheck = await checkScheduleExceptions(targetProfessionalId, targetDateTime, targetDuration, tenantId);
+      const exceptionCheck = await checkScheduleExceptions(prisma, targetProfessionalId, targetDateTime, targetDuration, tenantId);
       if (!exceptionCheck.valid) {
         res.status(400).json({ error: exceptionCheck.error });
         return;
       }
 
       const professionalCollision = await checkProfessionalCollision(
+        prisma,
         targetProfessionalId,
         targetDateTime,
         targetDuration,
@@ -415,6 +287,7 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
 
       if (targetCabin) {
         const cabinCollision = await checkCabinCollision(
+          prisma,
           targetCabin,
           targetDateTime,
           targetDuration,
@@ -512,10 +385,13 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
           where: { id: id as string, tenantId },
           data: {
             professionalId: targetProfessionalId,
+            serviceId: serviceId !== undefined ? serviceId : existingAppt.serviceId,
+            additionalServiceIds: Array.isArray(additionalServiceIds) ? additionalServiceIds : existingAppt.additionalServiceIds,
             dateTime: targetDateTime,
             duration: targetDuration,
             status: status as AppointmentStatus,
             cabin: targetCabin,
+            notes: notes !== undefined ? notes : existingAppt.notes,
           },
           include: {
             patient: {
@@ -538,10 +414,13 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
         where: { id: id as string, tenantId },
         data: {
           professionalId: targetProfessionalId,
+          serviceId: serviceId !== undefined ? serviceId : existingAppt.serviceId,
+          additionalServiceIds: Array.isArray(additionalServiceIds) ? additionalServiceIds : existingAppt.additionalServiceIds,
           dateTime: targetDateTime,
           duration: targetDuration,
           status: status || existingAppt.status,
           cabin: targetCabin,
+          notes: notes !== undefined ? notes : existingAppt.notes,
         },
         include: {
           patient: {
@@ -582,12 +461,12 @@ export const deleteAppointment = async (req: AuthenticatedRequest, res: Response
     });
 
     if (!existingAppt) {
-      res.status(404).json({ error: 'Appointment not found.' });
+      res.status(404).json({ error: 'Cita no encontrada.' });
       return;
     }
 
     if (existingAppt.professionalId !== req.user!.id && !['ADMIN', 'SUPER_ADMIN'].includes(req.user!.role)) {
-      res.status(403).json({ error: 'You can only delete your own appointments' });
+      res.status(403).json({ error: 'Solo podés eliminar tus propias citas.' });
       return;
     }
 
@@ -607,51 +486,73 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
   try {
     const tenantId = req.user!.tenantId;
     const { id } = req.params;
-    const { packageLineId, evolutionNotes, measurements } = req.body;
+    const { packageLineId, additionalPackageLineIds, evolutionNotes, measurements } = req.body;
 
-    if (!packageLineId || !evolutionNotes || !measurements) {
-      res.status(400).json({ error: 'packageLineId, evolutionNotes, and measurements are required.' });
+    if (!evolutionNotes) {
+      res.status(400).json({ error: 'evolutionNotes es obligatorio.' });
       return;
     }
+
+    // Todas las líneas de paquete que esta sesión va a descontar juntas (ej.
+    // una cita combinada de "Nueva Cita" → "Paquete" con varios servicios del
+    // mismo combo: se completan y descuentan todas a la vez, no solo la
+    // principal).
+    const allPackageLineIds: string[] = [
+      packageLineId,
+      ...(Array.isArray(additionalPackageLineIds) ? additionalPackageLineIds : []),
+    ].filter(Boolean);
 
     const appointment = await prisma.appointment.findUnique({
       where: { id: id as string, tenantId },
     });
 
     if (!appointment) {
-      res.status(404).json({ error: 'Appointment not found.' });
+      res.status(404).json({ error: 'Cita no encontrada.' });
       return;
     }
 
     if (appointment.status === AppointmentStatus.COMPLETADA || appointment.status === AppointmentStatus.CANCELADA_CON_CARGO) {
-      res.status(400).json({ error: 'Appointment is already completed or cancelled with charge.' });
+      res.status(400).json({ error: 'La cita ya fue completada o cancelada con cobro.' });
       return;
     }
 
-    // Fetch and validate package line
-    const packageLine = await prisma.treatmentPackageLine.findUnique({
-      where: { id: packageLineId, tenantId },
-      include: { package: true },
-    });
-
-    if (!packageLine) {
-      res.status(404).json({ error: 'Treatment package line not found.' });
+    if (new Date() < appointment.dateTime) {
+      res.status(400).json({ error: 'No se puede completar una cita antes de su hora programada.' });
       return;
     }
 
-    if (packageLine.package.patientId !== appointment.patientId) {
-      res.status(400).json({ error: 'Treatment package does not belong to this appointment\'s patient.' });
-      return;
-    }
+    // Fetch and validate package lines (opcional: una cita puede completarse como sesión
+    // única sin descontar de ningún bono/paquete de tratamiento). Si hay varias (cita
+    // combinada de un mismo paquete), se validan y descuentan todas juntas.
+    let packageLine: (Awaited<ReturnType<typeof prisma.treatmentPackageLine.findUnique>> & { package: any }) | null = null;
+    let allPackageLines: (Awaited<ReturnType<typeof prisma.treatmentPackageLine.findUnique>> & { package: any })[] = [];
+    if (allPackageLineIds.length > 0) {
+      allPackageLines = await prisma.treatmentPackageLine.findMany({
+        where: { id: { in: allPackageLineIds }, tenantId },
+        include: { package: true },
+      }) as any;
 
-    if (packageLine.package.status !== 'ACTIVE') {
-      res.status(400).json({ error: 'Treatment package is not active.' });
-      return;
-    }
+      if (allPackageLines.length !== allPackageLineIds.length) {
+        res.status(404).json({ error: 'Una o más líneas del paquete de tratamiento no fueron encontradas.' });
+        return;
+      }
 
-    if (packageLine.usedSessions >= packageLine.totalSessions) {
-      res.status(400).json({ error: 'No remaining sessions in this package line.' });
-      return;
+      for (const line of allPackageLines) {
+        if (line.package.patientId !== appointment.patientId) {
+          res.status(400).json({ error: 'El paquete de tratamiento no pertenece al paciente de esta cita.' });
+          return;
+        }
+        if (line.package.status !== 'ACTIVE') {
+          res.status(400).json({ error: 'El paquete de tratamiento no está activo.' });
+          return;
+        }
+        if (line.usedSessions >= line.totalSessions) {
+          res.status(400).json({ error: `No quedan sesiones disponibles en "${line.serviceName}" de este paquete.` });
+          return;
+        }
+      }
+
+      packageLine = allPackageLines.find((l) => l.id === packageLineId) || allPackageLines[0];
     }
 
     // Transaction to update appointment, package line, create session details, and check package completion
@@ -662,31 +563,46 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
         data: { status: AppointmentStatus.COMPLETADA },
       });
 
-      // 2. Increment used sessions on line
-      const updatedLine = await tx.treatmentPackageLine.update({
-        where: { id: packageLineId, tenantId },
-        data: { usedSessions: { increment: 1 } },
-      });
-
+      // 2. Increment used sessions en TODAS las líneas de paquete que aplican
+      // (solo si la sesión pertenece a un paquete)
+      const updatedLines = await Promise.all(
+        allPackageLineIds.map((lineId) =>
+          tx.treatmentPackageLine.update({
+            where: { id: lineId, tenantId },
+            data: { usedSessions: { increment: 1 } },
+          })
+        )
+      );
       // 3. Create Session Detail
       await tx.sessionDetail.create({
         data: {
           tenantId,
           appointmentId: id as string,
-          packageLineId,
+          packageLineId: packageLineId || null,
+          additionalPackageLineIds: Array.isArray(additionalPackageLineIds) ? additionalPackageLineIds : [],
           evolutionNotes,
-          measurements,
+          measurements: measurements || undefined,
         },
       });
 
       // 3.5. Consumo Automático de Insumos
-      const targetServiceId = appointment.serviceId || packageLine.serviceId;
+      const targetServiceId = appointment.serviceId || packageLine?.serviceId;
       if (targetServiceId) {
         const consumables = await tx.serviceConsumable.findMany({
           where: { serviceId: targetServiceId, tenantId },
         });
 
         for (const consumable of consumables) {
+          const product = await tx.product.findFirst({
+            where: { id: consumable.productId, tenantId },
+          });
+
+          if (!product || product.stock < consumable.quantity) {
+            throw new Error(
+              `INSUFFICIENT_STOCK: No hay suficiente stock de "${product?.name || consumable.productId}" para completar esta sesión. Disponible: ${product?.stock ?? 0}, necesario: ${consumable.quantity}.`
+            );
+          }
+
           // Descontar la cantidad del stock del Product
           await tx.product.update({
             where: { id: consumable.productId, tenantId },
@@ -696,6 +612,15 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
               },
             },
           });
+
+          // Mantener sincronizado el stock por sucursal (el que usa Terminal POS
+          // para bloquear ventas): si no hay fila para esta sucursal, no hace nada.
+          if (appointment.branchId) {
+            await tx.branchStock.updateMany({
+              where: { productId: consumable.productId, branchId: appointment.branchId, tenantId },
+              data: { stock: { decrement: consumable.quantity } },
+            });
+          }
 
           // Crear un InventoryMovement de tipo SESSION_CONSUMPTION apuntando al id de la cita
           await tx.inventoryMovement.create({
@@ -753,7 +678,7 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
         if (invoice) {
           price = invoice.total;
         } else {
-          const serviceId = appointment.serviceId || packageLine.serviceId;
+          const serviceId = appointment.serviceId || packageLine?.serviceId;
           if (serviceId) {
             const service = await tx.service.findUnique({
               where: { id: serviceId, tenantId },
@@ -784,22 +709,26 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
         }
       }
 
-      // 5. Evaluate package completion
-      const allLines = await tx.treatmentPackageLine.findMany({
-        where: { packageId: packageLine.packageId, tenantId },
-      });
-
-      const allSessionsUsed = allLines.every((line) => {
-        // Use updatedLine's value for the current line
-        const used = line.id === packageLineId ? updatedLine.usedSessions : line.usedSessions;
-        return used >= line.totalSessions;
-      });
-
-      if (allSessionsUsed) {
-        await tx.treatmentPackage.update({
-          where: { id: packageLine.packageId, tenantId },
-          data: { status: 'COMPLETED' },
+      // 5. Evaluate package completion (solo aplica si esta sesión pertenece a un paquete;
+      // una cita combinada puede tocar líneas de un mismo paquete, se evalúa una sola vez)
+      const touchedPackageIds = [...new Set(allPackageLines.map((l) => l.packageId))];
+      for (const packageId of touchedPackageIds) {
+        const allLines = await tx.treatmentPackageLine.findMany({
+          where: { packageId, tenantId },
         });
+
+        const allSessionsUsed = allLines.every((line) => {
+          const updated = updatedLines.find((u) => u.id === line.id);
+          const used = updated ? updated.usedSessions : line.usedSessions;
+          return used >= line.totalSessions;
+        });
+
+        if (allSessionsUsed) {
+          await tx.treatmentPackage.update({
+            where: { id: packageId, tenantId },
+            data: { status: 'COMPLETED' },
+          });
+        }
       }
     });
 
@@ -807,6 +736,10 @@ export const complete = async (req: AuthenticatedRequest, res: Response): Promis
       message: 'Appointment completed and session consumed successfully.',
     });
   } catch (error: any) {
+    if (typeof error.message === 'string' && error.message.startsWith('INSUFFICIENT_STOCK: ')) {
+      res.status(400).json({ error: error.message.replace('INSUFFICIENT_STOCK: ', '') });
+      return;
+    }
     res.status(500).json({ error: error.message || 'An error occurred completing appointment.' });
   }
 };
@@ -818,7 +751,7 @@ export const cancelCharge = async (req: AuthenticatedRequest, res: Response): Pr
     const { packageLineId } = req.body;
 
     if (!packageLineId) {
-      res.status(400).json({ error: 'packageLineId is required.' });
+      res.status(400).json({ error: 'packageLineId es obligatorio.' });
       return;
     }
 
@@ -827,12 +760,12 @@ export const cancelCharge = async (req: AuthenticatedRequest, res: Response): Pr
     });
 
     if (!appointment) {
-      res.status(404).json({ error: 'Appointment not found.' });
+      res.status(404).json({ error: 'Cita no encontrada.' });
       return;
     }
 
     if (appointment.status === AppointmentStatus.COMPLETADA || appointment.status === AppointmentStatus.CANCELADA_CON_CARGO) {
-      res.status(400).json({ error: 'Appointment is already completed or cancelled with charge.' });
+      res.status(400).json({ error: 'La cita ya fue completada o cancelada con cobro.' });
       return;
     }
 
@@ -843,22 +776,22 @@ export const cancelCharge = async (req: AuthenticatedRequest, res: Response): Pr
     });
 
     if (!packageLine) {
-      res.status(404).json({ error: 'Treatment package line not found.' });
+      res.status(404).json({ error: 'Línea del paquete de tratamiento no encontrada.' });
       return;
     }
 
     if (packageLine.package.patientId !== appointment.patientId) {
-      res.status(400).json({ error: 'Treatment package does not belong to this appointment\'s patient.' });
+      res.status(400).json({ error: 'El paquete de tratamiento no pertenece al paciente de esta cita.' });
       return;
     }
 
     if (packageLine.package.status !== 'ACTIVE') {
-      res.status(400).json({ error: 'Treatment package is not active.' });
+      res.status(400).json({ error: 'El paquete de tratamiento no está activo.' });
       return;
     }
 
     if (packageLine.usedSessions >= packageLine.totalSessions) {
-      res.status(400).json({ error: 'No remaining sessions in this package line.' });
+      res.status(400).json({ error: 'No quedan sesiones disponibles en esta línea del paquete.' });
       return;
     }
 
@@ -915,7 +848,7 @@ export const cancelCharge = async (req: AuthenticatedRequest, res: Response): Pr
 export const getRetouchAlerts = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     if (!req.user) {
-      res.status(401).json({ error: 'Unauthorized.' });
+      res.status(401).json({ error: 'No autorizado.' });
       return;
     }
     const tenantId = req.user.tenantId;
@@ -958,7 +891,7 @@ export const getRetouchAlerts = async (req: AuthenticatedRequest, res: Response)
 export const updateRetouch = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     if (!req.user) {
-      res.status(401).json({ error: 'Unauthorized.' });
+      res.status(401).json({ error: 'No autorizado.' });
       return;
     }
     const tenantId = req.user.tenantId;
@@ -999,7 +932,7 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response): Pr
     const { status } = req.body;
 
     if (!status) {
-      res.status(400).json({ error: 'Status is required.' });
+      res.status(400).json({ error: 'El estado es obligatorio.' });
       return;
     }
 
@@ -1014,7 +947,7 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response): Pr
     });
 
     if (!existingAppt) {
-      res.status(404).json({ error: 'Appointment not found.' });
+      res.status(404).json({ error: 'Cita no encontrada.' });
       return;
     }
 

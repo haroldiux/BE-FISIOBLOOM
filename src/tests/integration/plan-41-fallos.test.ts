@@ -83,7 +83,7 @@ describe('Integration Tests: Plan 41 Fallos Audit Scenarios (Task 5.2)', () => {
         .send('{"email": "admin@test.com", invalid_json}');
 
       expect(res.status).toBe(400);
-      expect(res.body.error).toBe('Invalid JSON payload');
+      expect(res.body.error).toBe('Formato JSON inválido.');
     });
   });
 });

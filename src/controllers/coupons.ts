@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { DiscountType } from '@prisma/client';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
+import { boliviaStartOfDateOnly, boliviaEndOfDateOnly } from '../services/appointment.service';
 
 export const validateCoupon = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
@@ -27,8 +28,14 @@ export const validateCoupon = async (req: AuthenticatedRequest, res: Response): 
       return;
     }
 
+    // Las fechas de inicio/fin se guardan como medianoche del día elegido. Si
+    // comparáramos "ahora" directo contra esa medianoche, el cupón quedaría
+    // "vencido" desde el primer minuto de su propio último día válido — hay
+    // que dejarlo vigente hasta el final de ese día (hora de Bolivia).
     const now = new Date();
-    if (now < new Date(coupon.startDate) || now > new Date(coupon.endDate)) {
+    const validFrom = boliviaStartOfDateOnly(new Date(coupon.startDate));
+    const validUntil = boliviaEndOfDateOnly(new Date(coupon.endDate));
+    if (now < validFrom || now > validUntil) {
       res.status(400).json({ error: 'El cupón ha expirado o aún no está vigente.' });
       return;
     }

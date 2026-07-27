@@ -16,7 +16,7 @@ export const createTenant = async (req: Request, res: Response): Promise<void> =
   try {
     const { name, slug, plan } = req.body;
     if (!name || !slug) {
-      res.status(400).json({ error: 'Name and slug are required.' });
+      res.status(400).json({ error: 'El nombre y el slug son obligatorios.' });
       return;
     }
 
@@ -24,7 +24,7 @@ export const createTenant = async (req: Request, res: Response): Promise<void> =
       where: { slug },
     });
     if (existing) {
-      res.status(400).json({ error: 'Tenant slug already exists.' });
+      res.status(400).json({ error: 'Ya existe una clínica con ese slug.' });
       return;
     }
 
@@ -64,7 +64,7 @@ export const updateTenant = async (req: Request, res: Response): Promise<void> =
 
     const existing = await prisma.tenant.findUnique({ where: { id: String(id) } });
     if (!existing) {
-      res.status(404).json({ error: 'Tenant not found.' });
+      res.status(404).json({ error: 'Clínica no encontrada.' });
       return;
     }
 

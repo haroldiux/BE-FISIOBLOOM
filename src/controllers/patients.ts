@@ -7,22 +7,45 @@ import { sanitizeXSS } from '../services/sanitize';
 
 export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { search } = req.query;
+    const { search, bookingSearch } = req.query;
     const isReceptionist = req.user?.role === Role.RECEPTIONIST;
     const tenantId = req.user!.tenantId;
 
     const whereClause: any = {
       isActive: true,
       tenantId,
+      AND: [] as any[],
     };
+
+    // Fisioterapia y Estética son especialidades distintas con carteras de
+    // pacientes separadas: un fisio no debe ver pacientes que solo son de la
+    // esteticista, y viceversa. Se considera "de la especialidad" a un
+    // paciente si fue registrado por alguien de esa especialidad o si tiene
+    // al menos una cita de un servicio/profesional de esa especialidad.
+    if (req.user?.role === Role.PHYSIO || req.user?.role === Role.AESTHETICIAN) {
+      const specialtyCategories =
+        req.user.role === Role.PHYSIO ? ['FISIOTERAPIA'] : ['FACIAL', 'CORPORAL', 'ESTETICA'];
+
+      whereClause.AND.push({
+        OR: [
+          { createdBy: { role: req.user.role } },
+          { appointments: { some: { professional: { role: req.user.role } } } },
+          { appointments: { some: { service: { category: { in: specialtyCategories } } } } },
+        ],
+      });
+    }
 
     if (search) {
       const searchStr = search as string;
-      whereClause.OR = [
+      whereClause.AND.push({ OR: [
         { fullName: { contains: searchStr, mode: 'insensitive' } },
         { phone: { contains: searchStr, mode: 'insensitive' } },
         { email: { contains: searchStr, mode: 'insensitive' } },
-      ];
+      ] });
+    }
+
+    if (whereClause.AND.length === 0) {
+      delete whereClause.AND;
     }
 
     const patients = await prisma.patient.findMany({
@@ -35,8 +58,9 @@ export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<
         consentSigned: true,
         createdAt: true,
         updatedAt: true,
-        // Only include medicalHistory if NOT a receptionist
-        medicalHistory: !isReceptionist,
+        // No exponer historial médico en una búsqueda de agendamiento (solo se necesita
+        // identificar al paciente por nombre/teléfono), ni tampoco a recepción.
+        medicalHistory: !isReceptionist && bookingSearch !== 'true',
       },
       orderBy: {
         fullName: 'asc',
@@ -56,7 +80,7 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
     const tenantId = req.user!.tenantId;
 
     if (!fullName || !phone) {
-      res.status(400).json({ error: 'fullName and phone are required.' });
+      res.status(400).json({ error: 'fullName y phone son obligatorios.' });
       return;
     }
 
@@ -74,6 +98,21 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
       }
     }
 
+    // Evitar duplicados: si ya existe un paciente activo con ese teléfono en la
+    // clínica, se devuelve el existente en vez de crear uno nuevo. Esto puede pasar
+    // cuando un profesional no encuentra a un paciente ya existente en su vista
+    // acotada y trata de registrarlo "de nuevo".
+    const duplicatePatient = await prisma.patient.findFirst({
+      where: { phone: sanitizeXSS(phone), tenantId, isActive: true },
+    });
+    if (duplicatePatient) {
+      res.status(200).json({
+        message: 'Patient already registered.',
+        patient: duplicatePatient,
+      });
+      return;
+    }
+
     const patientData: any = {
       id: id ? String(id) : undefined,
       fullName: sanitizeXSS(fullName),
@@ -81,6 +120,7 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
       email: email ? sanitizeXSS(email) : null,
       consentSigned: consentSigned !== undefined ? Boolean(consentSigned) : false,
       tenantId,
+      createdById: req.user?.id,
     };
 
     // Receptionists cannot register medical history
@@ -104,11 +144,24 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
 export const getById = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const isReceptionist = req.user?.role === Role.RECEPTIONIST;
     const tenantId = req.user!.tenantId;
 
+    const patientWhere: any = { id: id as string, isActive: true, tenantId };
+    // Misma separación por especialidad que en getAll: un fisio no debe poder
+    // abrir la ficha de un paciente que solo es de la esteticista, y viceversa.
+    if (req.user?.role === Role.PHYSIO || req.user?.role === Role.AESTHETICIAN) {
+      const specialtyCategories =
+        req.user.role === Role.PHYSIO ? ['FISIOTERAPIA'] : ['FACIAL', 'CORPORAL', 'ESTETICA'];
+
+      patientWhere.OR = [
+        { createdBy: { role: req.user.role } },
+        { appointments: { some: { professional: { role: req.user.role } } } },
+        { appointments: { some: { service: { category: { in: specialtyCategories } } } } },
+      ];
+    }
+
     const patient = await prisma.patient.findFirst({
-      where: { id: id as string, isActive: true, tenantId },
+      where: patientWhere,
       include: {
         treatmentPackages: {
           include: {
@@ -153,6 +206,12 @@ export const getById = async (req: AuthenticatedRequest, res: Response): Promise
                 role: true,
               },
             },
+            service: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
           },
           orderBy: {
             dateTime: 'desc',
@@ -175,30 +234,8 @@ export const getById = async (req: AuthenticatedRequest, res: Response): Promise
     });
 
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found.' });
+      res.status(404).json({ error: 'Paciente no encontrado.' });
       return;
-    }
-
-    // Security sanitization for RECEPTIONIST
-    if (isReceptionist) {
-      // Hide medicalHistory
-      patient.medicalHistory = null;
-
-      // Hide details from sessionDetail inside appointments
-      patient.appointments = patient.appointments.map((appt) => {
-        if (appt.sessionDetail) {
-          appt.sessionDetail = {
-            id: appt.sessionDetail.id,
-            appointmentId: appt.sessionDetail.appointmentId,
-            packageLineId: appt.sessionDetail.packageLineId,
-            createdAt: appt.sessionDetail.createdAt,
-            updatedAt: appt.sessionDetail.updatedAt,
-            evolutionNotes: null,
-            measurements: null,
-          } as any;
-        }
-        return appt;
-      });
     }
 
     res.json(patient);
@@ -215,7 +252,7 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
     const tenantId = req.user!.tenantId;
 
     if (isReceptionist && medicalHistory !== undefined) {
-      res.status(403).json({ error: 'Access denied. Receptionists cannot view or update medical records.' });
+      res.status(403).json({ error: 'Acceso denegado. Las recepcionistas no pueden editar el historial médico.' });
       return;
     }
 
@@ -224,7 +261,7 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
     });
 
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found.' });
+      res.status(404).json({ error: 'Paciente no encontrado.' });
       return;
     }
 
@@ -259,7 +296,7 @@ export const deletePatient = async (req: AuthenticatedRequest, res: Response): P
     });
 
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found.' });
+      res.status(404).json({ error: 'Paciente no encontrado.' });
       return;
     }
 
@@ -284,7 +321,7 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
     const tenantId = req.user!.tenantId;
 
     if (!serviceId || !signatureData) {
-      res.status(400).json({ error: 'serviceId and signatureData are required.' });
+      res.status(400).json({ error: 'serviceId y signatureData son obligatorios.' });
       return;
     }
 
@@ -315,25 +352,31 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
     });
 
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found.' });
+      res.status(404).json({ error: 'Paciente no encontrado.' });
       return;
     }
 
     let finalServiceId = serviceId;
+    const fallbackBranchId = req.user!.branchId || patient.branchId;
     if (serviceId === 'general') {
       let generalService = await prisma.service.findFirst({
         where: { name: 'Consentimiento General', tenantId },
       });
       if (!generalService) {
+        if (!fallbackBranchId) {
+          res.status(400).json({ error: 'No se pudo determinar la sucursal para crear el Consentimiento General.' });
+          return;
+        }
         generalService = await prisma.service.create({
           data: {
-            id: `general-service-${tenantId}`,
+            id: `general-service-${tenantId}-${fallbackBranchId}`,
             name: 'Consentimiento General',
             category: 'ESTETICA',
             defaultDuration: 0,
             defaultPrice: 0,
             requiresConsent: true,
             tenantId,
+            branchId: fallbackBranchId,
           },
         });
       }
@@ -348,15 +391,20 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
         });
       }
       if (!laserService) {
+        if (!fallbackBranchId) {
+          res.status(400).json({ error: 'No se pudo determinar la sucursal para crear el servicio de Depilación Láser.' });
+          return;
+        }
         laserService = await prisma.service.create({
           data: {
-            id: `laser-service-${tenantId}`,
+            id: `laser-service-${tenantId}-${fallbackBranchId}`,
             name: 'Depilación Láser',
             category: 'ESTETICA',
             defaultDuration: 30,
             defaultPrice: 150,
             requiresConsent: true,
             tenantId,
+            branchId: fallbackBranchId,
           },
         });
       }
@@ -368,7 +416,7 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
       });
 
       if (!service) {
-        res.status(404).json({ error: 'Service not found.' });
+        res.status(404).json({ error: 'Servicio no encontrado.' });
         return;
       }
     }
@@ -381,6 +429,7 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
         serviceId: finalServiceId,
         signatureData,
         tenantId,
+        branchId: patient.branchId,
       },
       include: {
         service: {
@@ -416,7 +465,7 @@ export const getConsents = async (req: AuthenticatedRequest, res: Response): Pro
     });
 
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found.' });
+      res.status(404).json({ error: 'Paciente no encontrado.' });
       return;
     }
 
@@ -480,7 +529,7 @@ export const uploadPhoto = async (req: AuthenticatedRequest, res: Response): Pro
     const tenantId = req.user!.tenantId;
 
     if (!photoData) {
-      res.status(400).json({ error: 'photoData (Base64 string) is required.' });
+      res.status(400).json({ error: 'photoData (string en Base64) es obligatorio.' });
       return;
     }
 
@@ -490,7 +539,7 @@ export const uploadPhoto = async (req: AuthenticatedRequest, res: Response): Pro
     });
 
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found in this clinic.' });
+      res.status(404).json({ error: 'Paciente no encontrado en esta clínica.' });
       return;
     }
 
@@ -542,7 +591,7 @@ export const getPhotos = async (req: AuthenticatedRequest, res: Response): Promi
     });
 
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found in this clinic.' });
+      res.status(404).json({ error: 'Paciente no encontrado en esta clínica.' });
       return;
     }
 

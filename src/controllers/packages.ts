@@ -1,14 +1,25 @@
 import { Response } from 'express';
+import { AppointmentStatus } from '@prisma/client';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
+import { scheduleAppointmentReminder } from '../services/reminderQueue';
+import {
+  normalizeToBoliviaTime,
+  validateAppointmentDate,
+  validateAppointmentStatus,
+  checkWorkingHours,
+  checkScheduleExceptions,
+  checkProfessionalCollision,
+  checkCabinCollision,
+} from '../services/appointment.service';
 
 export const createPackage = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { patientId, packageName, expiresAt, lines } = req.body;
+    const { patientId, packageName, totalPrice, expiresAt, lines } = req.body;
     const tenantId = req.user!.tenantId;
 
     if (!patientId || !packageName || !expiresAt || !lines || !Array.isArray(lines) || lines.length === 0) {
-      res.status(400).json({ error: 'patientId, packageName, expiresAt, and a non-empty lines array are required.' });
+      res.status(400).json({ error: 'patientId, packageName, expiresAt y un array de lines no vacío son obligatorios.' });
       return;
     }
 
@@ -18,14 +29,14 @@ export const createPackage = async (req: AuthenticatedRequest, res: Response): P
     });
 
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found.' });
+      res.status(404).json({ error: 'Paciente no encontrado.' });
       return;
     }
 
     // Validate lines data structure
     for (const line of lines) {
       if (!line.serviceName || typeof line.totalSessions !== 'number' || line.totalSessions <= 0) {
-        res.status(400).json({ error: 'Each line must have a serviceName and a positive totalSessions number.' });
+        res.status(400).json({ error: 'Cada línea debe tener un serviceName y un totalSessions positivo.' });
         return;
       }
     }
@@ -34,8 +45,10 @@ export const createPackage = async (req: AuthenticatedRequest, res: Response): P
     const newPackage = await prisma.treatmentPackage.create({
       data: {
         tenantId,
+        branchId: patient.branchId,
         patientId,
         packageName,
+        totalPrice: totalPrice !== undefined ? Number(totalPrice) : null,
         expiresAt: new Date(expiresAt),
         status: 'ACTIVE',
         lines: {
@@ -62,6 +75,145 @@ export const createPackage = async (req: AuthenticatedRequest, res: Response): P
   }
 };
 
+// Error controlado (mensaje seguro para mostrar al usuario) vs. un error
+// inesperado (500). Permite abortar la transacción de abajo sin perder el
+// mensaje específico de cada validación.
+class SellPackageValidationError extends Error {}
+
+/**
+ * Vende un paquete pre-armado (PackageTemplate) a un paciente Y agenda su
+ * primera cita, en una única operación atómica: si agendar la cita falla
+ * (turno ocupado, fuera de horario, etc.), la venta del paquete se revierte
+ * también — nunca queda un paquete pagado sin cita agendada. Se invoca desde
+ * "Nueva Cita" cuando se elige la pestaña "Paquete" en vez de armar la cita
+ * con servicios sueltos.
+ */
+export const sellPackageAndSchedule = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { templateId, patientId, professionalId, dateTime, duration, cabin, notes, status } = req.body;
+    const tenantId = req.user!.tenantId;
+
+    if (!templateId || !patientId || !professionalId || !dateTime || !duration) {
+      res.status(400).json({ error: 'templateId, patientId, professionalId, dateTime y duration son obligatorios.' });
+      return;
+    }
+
+    if (status && !validateAppointmentStatus(status)) {
+      res.status(400).json({ error: `Estado de cita inválido. Valores permitidos deben coincidir con los estados de cita soportados.` });
+      return;
+    }
+
+    const apptDate = normalizeToBoliviaTime(dateTime);
+    const dateCheck = validateAppointmentDate(apptDate);
+    if (!dateCheck.valid) {
+      res.status(400).json({ error: dateCheck.error });
+      return;
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const template = await tx.packageTemplate.findFirst({
+        where: { id: templateId, tenantId, isActive: true },
+        include: { lines: { include: { service: { select: { name: true } } } } },
+      });
+      if (!template) {
+        throw new SellPackageValidationError('Paquete pre-armado no encontrado.');
+      }
+
+      const patient = await tx.patient.findFirst({
+        where: { id: patientId, tenantId, isActive: true },
+      });
+      if (!patient) {
+        throw new SellPackageValidationError('Paciente no encontrado.');
+      }
+
+      const scheduleCheck = await checkWorkingHours(tx, professionalId, apptDate, Number(duration), tenantId);
+      if (!scheduleCheck.valid) {
+        throw new SellPackageValidationError(scheduleCheck.error!);
+      }
+
+      const exceptionCheck = await checkScheduleExceptions(tx, professionalId, apptDate, Number(duration), tenantId);
+      if (!exceptionCheck.valid) {
+        throw new SellPackageValidationError(exceptionCheck.error!);
+      }
+
+      const professionalCollision = await checkProfessionalCollision(tx, professionalId, apptDate, Number(duration), tenantId);
+      if (professionalCollision) {
+        throw new SellPackageValidationError('El profesional ya cuenta con una cita en ese horario');
+      }
+
+      if (cabin) {
+        const cabinCollision = await checkCabinCollision(tx, cabin, apptDate, Number(duration), tenantId);
+        if (cabinCollision) {
+          throw new SellPackageValidationError('La cabina ya está ocupada en ese horario');
+        }
+      }
+
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + (template.validityDays || 90));
+
+      const newPackage = await tx.treatmentPackage.create({
+        data: {
+          tenantId,
+          branchId: patient.branchId,
+          patientId,
+          packageName: template.name,
+          totalPrice: template.totalPrice,
+          expiresAt,
+          status: 'ACTIVE',
+          lines: {
+            create: template.lines.map((line) => ({
+              tenantId,
+              serviceId: line.serviceId,
+              serviceName: line.service?.name || 'Servicio Desconocido',
+              totalSessions: line.sessions,
+              usedSessions: 0,
+            })),
+          },
+        },
+        include: { lines: true },
+      });
+
+      const serviceIds = template.lines.map((l) => l.serviceId).filter(Boolean);
+
+      const newAppointment = await tx.appointment.create({
+        data: {
+          tenantId,
+          patientId,
+          professionalId,
+          serviceId: serviceIds[0] || null,
+          additionalServiceIds: serviceIds.slice(1),
+          dateTime: apptDate,
+          duration: Number(duration),
+          status: (status as AppointmentStatus) || AppointmentStatus.PENDIENTE,
+          cabin: cabin || null,
+          notes: notes || null,
+        },
+        include: {
+          patient: { select: { id: true, fullName: true } },
+          professional: { select: { id: true, name: true } },
+          service: true,
+        },
+      });
+
+      return { newPackage, newAppointment };
+    });
+
+    await scheduleAppointmentReminder(result.newAppointment.id, result.newAppointment.dateTime);
+
+    res.status(201).json({
+      message: 'Paquete vendido y cita agendada correctamente.',
+      package: result.newPackage,
+      appointment: result.newAppointment,
+    });
+  } catch (error: any) {
+    if (error instanceof SellPackageValidationError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    res.status(500).json({ error: error.message || 'An error occurred selling the package.' });
+  }
+};
+
 export const getPatientPackages = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
@@ -72,7 +224,7 @@ export const getPatientPackages = async (req: AuthenticatedRequest, res: Respons
     });
 
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found.' });
+      res.status(404).json({ error: 'Paciente no encontrado.' });
       return;
     }
 

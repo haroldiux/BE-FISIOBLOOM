@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { requireAuth, requireRole } from '../middlewares/auth';
+import { requireActiveShift } from '../middlewares/shiftGate';
 import { Role } from '@prisma/client';
 import * as invoicesController from '../controllers/invoices';
 
@@ -18,10 +19,10 @@ router.get('/', invoicesController.getAll);
 router.get('/:id', invoicesController.getById);
 
 // POST /api/invoices
-router.post('/', requireRole([Role.RECEPTIONIST, Role.ADMIN, Role.SUPER_ADMIN]), invoicesController.create);
+router.post('/', requireRole([Role.RECEPTIONIST, Role.ADMIN, Role.SUPER_ADMIN]), requireActiveShift, invoicesController.create);
 
 // PUT /api/invoices/:id
-router.put('/:id', requireRole([Role.RECEPTIONIST, Role.ADMIN, Role.SUPER_ADMIN]), invoicesController.updateInvoice);
+router.put('/:id', requireRole([Role.RECEPTIONIST, Role.ADMIN, Role.SUPER_ADMIN]), requireActiveShift, invoicesController.updateInvoice);
 
 // DELETE /api/invoices/:id (Void invoice)
 router.delete('/:id', requireRole([Role.ADMIN, Role.SUPER_ADMIN]), invoicesController.voidInvoice);

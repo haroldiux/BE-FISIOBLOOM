@@ -3,20 +3,21 @@ import { getAll, create, getById, update, deletePatient, uploadPhoto, getPhotos 
 import { signConsent, getConsents, getAllConsents } from '../controllers/consents';
 import { getPatientPackages } from '../controllers/packages';
 import { requireAuth, requireRole } from '../middlewares/auth';
+import { requireActiveShift } from '../middlewares/shiftGate';
 import { Role } from '@prisma/client';
 
 const router = Router();
 
 router.get('/', requireAuth, getAll);
 router.get('/consents/all', requireAuth, getAllConsents);
-router.post('/', requireAuth, create);
+router.post('/', requireAuth, requireActiveShift, create);
 router.get('/:id', requireAuth, getById);
 router.get('/:id/packages', requireAuth, getPatientPackages);
-router.post('/:id/consent', requireAuth, signConsent);
+router.post('/:id/consent', requireAuth, requireActiveShift, signConsent);
 router.get('/:id/consent', requireAuth, getConsents);
-router.post('/:id/photos', requireAuth, uploadPhoto);
+router.post('/:id/photos', requireAuth, requireActiveShift, uploadPhoto);
 router.get('/:id/photos', requireAuth, getPhotos);
-router.put('/:id', requireAuth, update);
+router.put('/:id', requireAuth, requireActiveShift, update);
 router.delete('/:id', requireAuth, requireRole([Role.ADMIN]), deletePatient); // Only ADMIN can delete/deactivate
 
 export default router;

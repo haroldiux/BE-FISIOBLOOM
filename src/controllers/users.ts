@@ -9,7 +9,7 @@ export const updateUser = async (req: AuthenticatedRequest, res: Response): Prom
     const { name, email, role, isActive } = req.body;
 
     if (!req.user) {
-      res.status(401).json({ error: 'Unauthorized.' });
+      res.status(401).json({ error: 'No autorizado.' });
       return;
     }
 
@@ -21,13 +21,13 @@ export const updateUser = async (req: AuthenticatedRequest, res: Response): Prom
     });
 
     if (!targetUser) {
-      res.status(404).json({ error: 'User not found.' });
+      res.status(404).json({ error: 'Usuario no encontrado.' });
       return;
     }
 
     // Bug #7: Admin self-deactivation guard
     if (id === req.user.id && isActive === false) {
-      res.status(400).json({ error: 'Cannot deactivate your own account' });
+      res.status(400).json({ error: 'No podés desactivar tu propia cuenta.' });
       return;
     }
 
@@ -67,7 +67,7 @@ export const reactivateUser = async (req: AuthenticatedRequest, res: Response): 
     const { id } = req.params;
 
     if (!req.user) {
-      res.status(401).json({ error: 'Unauthorized.' });
+      res.status(401).json({ error: 'No autorizado.' });
       return;
     }
 
@@ -78,7 +78,7 @@ export const reactivateUser = async (req: AuthenticatedRequest, res: Response): 
     });
 
     if (!targetUser) {
-      res.status(404).json({ error: 'User not found.' });
+      res.status(404).json({ error: 'Usuario no encontrado.' });
       return;
     }
 

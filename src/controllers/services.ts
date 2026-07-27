@@ -83,11 +83,17 @@ export const createService = async (req: AuthenticatedRequest, res: Response): P
   try {
     const { name, category, treatmentType, defaultDuration, defaultPrice, price, retouchConfig, requiresConsent, contraindications } = req.body;
     const tenantId = req.user!.tenantId;
+    const branchId = req.user!.branchId;
 
     const resolvedPrice = defaultPrice !== undefined ? defaultPrice : price;
 
     if (!name || !category || resolvedPrice === undefined) {
-      res.status(400).json({ error: 'name, category, and defaultPrice (or price) are required.' });
+      res.status(400).json({ error: 'name, category y defaultPrice (o price) son obligatorios.' });
+      return;
+    }
+
+    if (!branchId) {
+      res.status(400).json({ error: 'No hay una sucursal activa seleccionada para crear el servicio.' });
       return;
     }
 
@@ -102,6 +108,7 @@ export const createService = async (req: AuthenticatedRequest, res: Response): P
         requiresConsent: !!requiresConsent,
         contraindications: contraindications || undefined,
         tenantId,
+        branchId,
       },
       include: {
         consumables: {
@@ -190,7 +197,7 @@ export const updateConsumables = async (req: AuthenticatedRequest, res: Response
     const tenantId = req.user!.tenantId;
 
     if (!Array.isArray(consumables)) {
-      res.status(400).json({ error: 'consumables must be an array.' });
+      res.status(400).json({ error: 'consumables debe ser un array.' });
       return;
     }
 
@@ -264,6 +271,7 @@ export const getAllTemplates = async (req: AuthenticatedRequest, res: Response):
       id: tmpl.id,
       name: tmpl.name,
       description: tmpl.description,
+      category: tmpl.category,
       validityDays: tmpl.validityDays,
       totalPrice: tmpl.totalPrice,
       isActive: tmpl.isActive,
@@ -283,11 +291,29 @@ export const getAllTemplates = async (req: AuthenticatedRequest, res: Response):
 
 export const createTemplate = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { name, description, validityDays, totalPrice, lines } = req.body;
+    const { name, description, category, validityDays, totalPrice, lines } = req.body;
     const tenantId = req.user!.tenantId;
 
     if (!name || totalPrice === undefined || !lines || !Array.isArray(lines) || lines.length === 0) {
-      res.status(400).json({ error: 'name, totalPrice, and a non-empty lines array are required.' });
+      res.status(400).json({ error: 'name, totalPrice y un array de lines no vacío son obligatorios.' });
+      return;
+    }
+
+    if (!category || !Object.values(ServiceCategory).includes(category as ServiceCategory)) {
+      res.status(400).json({ error: 'Debés elegir una especialidad/categoría válida para el paquete.' });
+      return;
+    }
+
+    // Todos los servicios del paquete deben pertenecer a la misma
+    // especialidad elegida — evita paquetes mezclados (ej. fisioterapia +
+    // facial) que después no se pueden asignar a un solo profesional.
+    const lineServices = await prisma.service.findMany({
+      where: { id: { in: lines.map((l: any) => l.serviceId) }, tenantId },
+      select: { id: true, category: true },
+    });
+    const mismatched = lineServices.some((s) => s.category !== category);
+    if (mismatched) {
+      res.status(400).json({ error: 'Todos los servicios del paquete deben ser de la misma especialidad elegida.' });
       return;
     }
 
@@ -296,6 +322,7 @@ export const createTemplate = async (req: AuthenticatedRequest, res: Response): 
       data: {
         name,
         description,
+        category: category as ServiceCategory,
         validityDays: validityDays !== undefined ? Number(validityDays) : 90,
         totalPrice: Number(totalPrice),
         tenantId,
@@ -321,13 +348,33 @@ export const createTemplate = async (req: AuthenticatedRequest, res: Response): 
 export const updateTemplate = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const { name, description, validityDays, totalPrice, lines, isActive } = req.body;
+    const { name, description, category, validityDays, totalPrice, lines, isActive } = req.body;
     const tenantId = req.user!.tenantId;
 
     const existing = await prisma.packageTemplate.findFirst({ where: { id: String(id), tenantId } });
     if (!existing) {
       res.status(404).json({ error: 'Plantilla de paquete no encontrada.' });
       return;
+    }
+
+    if (category !== undefined && !Object.values(ServiceCategory).includes(category as ServiceCategory)) {
+      res.status(400).json({ error: 'Categoría/especialidad inválida.' });
+      return;
+    }
+
+    // Misma regla que al crear: todos los servicios del paquete deben ser de
+    // la especialidad efectiva (la nueva si se manda, si no la ya guardada).
+    if (lines && Array.isArray(lines)) {
+      const effectiveCategory = category !== undefined ? category : existing.category;
+      const lineServices = await prisma.service.findMany({
+        where: { id: { in: lines.map((l: any) => l.serviceId) }, tenantId },
+        select: { id: true, category: true },
+      });
+      const mismatched = lineServices.some((s) => s.category !== effectiveCategory);
+      if (mismatched) {
+        res.status(400).json({ error: 'Todos los servicios del paquete deben ser de la misma especialidad elegida.' });
+        return;
+      }
     }
 
     // Si nos pasan líneas, las eliminamos e insertamos de nuevo dentro de una transacción
@@ -342,6 +389,7 @@ export const updateTemplate = async (req: AuthenticatedRequest, res: Response): 
         data: {
           ...(name !== undefined && { name }),
           ...(description !== undefined && { description }),
+          ...(category !== undefined && { category: category as ServiceCategory }),
           ...(validityDays !== undefined && { validityDays: Number(validityDays) }),
           ...(totalPrice !== undefined && { totalPrice: Number(totalPrice) }),
           ...(isActive !== undefined && { isActive }),
@@ -435,7 +483,7 @@ export const saveConsumables = async (req: AuthenticatedRequest, res: Response):
     const items = Array.isArray(body) ? body : (body.consumables || body.items || []);
 
     if (!Array.isArray(items)) {
-      res.status(400).json({ error: 'Body must be an array or contain a consumables array.' });
+      res.status(400).json({ error: 'El cuerpo debe ser un array o contener un array de insumos (consumables).' });
       return;
     }
 

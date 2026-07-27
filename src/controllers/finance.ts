@@ -275,12 +275,18 @@ export const getCommissions = async (req: AuthenticatedRequest, res: Response): 
       return;
     }
 
-    // Obtener todos los profesionales con roles relevantes del tenant
+    // Obtener los profesionales con roles relevantes del tenant. Un ADMIN o
+    // SÚPER ADMIN ve el desempeño de todo el staff (incluyendo Recepción);
+    // un profesional o recepcionista solo puede ver su propio desempeño, no
+    // el de sus compañeros ni el de administradores.
+    const isPrivileged = req.user!.role === Role.ADMIN || req.user!.role === Role.SUPER_ADMIN;
+    const relevantRoles = [Role.ADMIN, Role.PHYSIO, Role.AESTHETICIAN, Role.RECEPTIONIST];
     const staffMembers = await prisma.user.findMany({
       where: {
-        role: { in: [Role.ADMIN, Role.PHYSIO, Role.AESTHETICIAN] },
+        role: { in: relevantRoles },
         isActive: true,
         tenantId,
+        ...(isPrivileged ? {} : { id: req.user!.id }),
       },
       select: {
         id: true,
@@ -293,6 +299,22 @@ export const getCommissions = async (req: AuthenticatedRequest, res: Response): 
     const performances: any[] = [];
     const monthFormatter = new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric' });
     const monthLabel = monthFormatter.format(now);
+
+    // Facturas pagadas del período, una sola vez para todo el staff. Cada
+    // ítem se le atribuye a la persona correcta según su naturaleza: los
+    // tratamientos se acreditan a quien atendió la cita
+    // (appointment.professionalId) y los productos a quien cobró en el
+    // Terminal POS (soldById) — un fisio/esteticista no vende productos
+    // sueltos, y recepción no realiza tratamientos, así que nunca se deben
+    // mezclar ni atribuirle a alguien una factura completa solo porque él o
+    // ella fue quien pasó la tarjeta.
+    const periodInvoices = await prisma.invoice.findMany({
+      where: { status: 'PAGADO', paidAt: { gte: start, lte: end }, tenantId },
+      include: {
+        appointment: { select: { professionalId: true } },
+        items: { include: { product: true } },
+      },
+    });
 
     for (const member of staffMembers) {
       // Buscar o inicializar su StaffProfile
@@ -313,47 +335,27 @@ export const getCommissions = async (req: AuthenticatedRequest, res: Response): 
         });
       }
 
-      // Buscar facturas pagadas correspondientes a citas del profesional en el rango de fechas para este tenant
-      const invoices = await prisma.invoice.findMany({
-        where: {
-          status: 'PAGADO',
-          paidAt: { gte: start, lte: end },
-          tenantId,
-          appointment: { professionalId: member.id }
-        },
-        include: {
-          items: {
-            include: { product: true }
-          }
-        }
-      });
-
-      let actualSales = 0;
       let servicesSales = 0;
       let productsSales = 0;
       let servicesCount = 0;
       let productsCount = 0;
 
-      for (const inv of invoices) {
-        actualSales += inv.total;
+      for (const inv of periodInvoices) {
+        const professionalId = inv.appointment?.professionalId;
         for (const item of inv.items) {
-          if (item.product) {
-            if (item.product.category === 'TRATAMIENTO') {
-              servicesSales += item.total;
-              servicesCount += item.quantity;
-            } else if (item.product.category === 'PRODUCTO') {
+          if (item.product?.category === 'PRODUCTO') {
+            if (inv.soldById === member.id) {
               productsSales += item.total;
               productsCount += item.quantity;
-            } else {
-              servicesSales += item.total;
-              servicesCount += item.quantity;
             }
-          } else {
+          } else if (professionalId === member.id) {
             servicesSales += item.total;
             servicesCount += item.quantity;
           }
         }
       }
+
+      const actualSales = servicesSales + productsSales;
 
       // Buscar comisiones acumuladas del tenant
       const commissionsAgg = await prisma.commission.aggregate({
@@ -401,10 +403,18 @@ export const calculatePayroll = async (req: AuthenticatedRequest, res: Response)
       return;
     }
 
+    // Cada sucursal es independiente: un Admin de sucursal solo paga a SU
+    // propio personal operativo (fisios, esteticistas, recepción) — nunca a
+    // otros administradores ni a personal de otras sucursales. A los
+    // administradores los paga el Súper Admin, que sí ve todo el tenant.
+    const staffWhere: any = staffId ? { id: staffId } : {};
+    if (req.user!.role !== Role.SUPER_ADMIN) {
+      staffWhere.branchId = req.user!.branchId;
+      staffWhere.role = { notIn: [Role.ADMIN, Role.SUPER_ADMIN] };
+    }
+
     const staffProfiles = await prisma.staffProfile.findMany({
-      where: staffId 
-        ? { userId: staffId, tenantId } 
-        : { tenantId },
+      where: { tenantId, user: staffWhere },
       include: {
         user: true,
       },
@@ -416,9 +426,28 @@ export const calculatePayroll = async (req: AuthenticatedRequest, res: Response)
     }
 
     const payrollEntries: any[] = [];
+    const skipped: { staffName: string; existingPeriod: string }[] = [];
 
     await prisma.$transaction(async (tx) => {
       for (const profile of staffProfiles) {
+        // No se puede pagar dos veces al mismo profesional por un período que
+        // ya se solapa con uno existente (evita duplicar sueldos/comisiones).
+        const overlapping = await tx.payrollEntry.findFirst({
+          where: {
+            staffId: profile.userId,
+            tenantId,
+            periodStart: { lte: periodEnd },
+            periodEnd: { gte: periodStart },
+          },
+        });
+        if (overlapping) {
+          skipped.push({
+            staffName: profile.user.name,
+            existingPeriod: `${overlapping.periodStart.toLocaleDateString('es-ES')} al ${overlapping.periodEnd.toLocaleDateString('es-ES')}`,
+          });
+          continue;
+        }
+
         const pendingCommissions = await tx.commission.findMany({
           where: {
             staffId: profile.userId,
@@ -468,12 +497,100 @@ export const calculatePayroll = async (req: AuthenticatedRequest, res: Response)
       }
     });
 
+    if (payrollEntries.length === 0 && skipped.length > 0) {
+      res.status(409).json({
+        error: `Ya existe una nómina para ese período para: ${skipped.map((s) => `${s.staffName} (${s.existingPeriod})`).join(', ')}.`,
+      });
+      return;
+    }
+
     res.status(201).json({
       message: 'Nóminas calculadas exitosamente.',
       payrolls: payrollEntries,
+      skipped,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al calcular nómina.' });
+  }
+};
+
+// Una nómina PENDIENTE todavía no se pagó, así que si el sueldo base del
+// profesional cambió (o ganó comisiones nuevas) después de generarla, se
+// puede volver a calcular para reflejar los valores actuales. Una nómina ya
+// PAGADA nunca se toca — es un registro histórico de lo que realmente se
+// pagó, no puede cambiar retroactivamente.
+export const recalculatePayroll = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user!.tenantId;
+
+    const existing = await prisma.payrollEntry.findFirst({
+      where: { id: String(id), tenantId },
+      include: { staff: { include: { staffProfile: true } } },
+    });
+
+    if (!existing) {
+      res.status(404).json({ error: 'Entrada de nómina no encontrada en esta clínica.' });
+      return;
+    }
+
+    if (req.user!.role !== Role.SUPER_ADMIN) {
+      const isOtherBranch = existing.staff.branchId !== req.user!.branchId;
+      const isAdminOrAbove = existing.staff.role === Role.ADMIN || existing.staff.role === Role.SUPER_ADMIN;
+      if (isOtherBranch || isAdminOrAbove) {
+        res.status(403).json({ error: 'No tenés permiso para modificar esta nómina.' });
+        return;
+      }
+    }
+
+    if (existing.status === 'PAID') {
+      res.status(400).json({ error: 'No se puede modificar una nómina que ya está pagada.' });
+      return;
+    }
+
+    if (!existing.staff.staffProfile) {
+      res.status(404).json({ error: 'El profesional ya no tiene un perfil de personal configurado.' });
+      return;
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      // Comisiones nuevas del mismo período que todavía no estén ligadas a
+      // esta nómina (pueden haber surgido ventas nuevas desde que se generó).
+      const newCommissions = await tx.commission.findMany({
+        where: {
+          staffId: existing.staffId,
+          status: 'PENDING',
+          tenantId,
+          createdAt: { gte: existing.periodStart, lte: existing.periodEnd },
+        },
+      });
+
+      const existingCommissionsTotal = await tx.commission.aggregate({
+        where: { payrollId: existing.id, tenantId },
+        _sum: { amount: true },
+      });
+
+      const newCommissionsAmount = newCommissions.reduce((sum, c) => sum + c.amount, 0);
+      const commissionsAmount = (existingCommissionsTotal._sum.amount ?? 0) + newCommissionsAmount;
+      const baseSalary = existing.staff.staffProfile!.baseSalary;
+      const totalPaid = baseSalary + commissionsAmount;
+
+      if (newCommissions.length > 0) {
+        await tx.commission.updateMany({
+          where: { id: { in: newCommissions.map((c) => c.id) }, tenantId },
+          data: { status: 'PAID', payrollId: existing.id },
+        });
+      }
+
+      return tx.payrollEntry.update({
+        where: { id: existing.id, tenantId },
+        data: { baseSalary, commissionsAmount, totalPaid },
+      });
+    });
+
+    res.json({ message: 'Nómina recalculada exitosamente.', payroll: updated });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al recalcular la nómina.' });
   }
 };
 
@@ -490,6 +607,17 @@ export const payPayroll = async (req: AuthenticatedRequest, res: Response): Prom
     if (!payrollEntry) {
       res.status(404).json({ error: 'Entrada de nómina no encontrada en esta clínica.' });
       return;
+    }
+
+    // Un Admin solo puede pagar nóminas de su propio personal operativo en su
+    // sucursal — nunca de otro administrador ni de otra sucursal.
+    if (req.user!.role !== Role.SUPER_ADMIN) {
+      const isOtherBranch = payrollEntry.staff.branchId !== req.user!.branchId;
+      const isAdminOrAbove = payrollEntry.staff.role === Role.ADMIN || payrollEntry.staff.role === Role.SUPER_ADMIN;
+      if (isOtherBranch || isAdminOrAbove) {
+        res.status(403).json({ error: 'No tenés permiso para pagar esta nómina.' });
+        return;
+      }
     }
 
     if (payrollEntry.status === 'PAID') {
@@ -546,14 +674,24 @@ export const getPayrolls = async (req: AuthenticatedRequest, res: Response): Pro
   try {
     const tenantId = req.user!.tenantId;
 
+    // Mismo criterio que al calcular: un Admin solo ve las nóminas de su
+    // propio personal operativo en su sucursal, nunca las de otros
+    // administradores ni de otras sucursales.
+    const staffWhere: any = {};
+    if (req.user!.role !== Role.SUPER_ADMIN) {
+      staffWhere.branchId = req.user!.branchId;
+      staffWhere.role = { notIn: [Role.ADMIN, Role.SUPER_ADMIN] };
+    }
+
     const payrolls = await prisma.payrollEntry.findMany({
-      where: { tenantId },
+      where: { tenantId, staff: staffWhere },
       include: {
         staff: {
           select: {
             id: true,
             name: true,
             email: true,
+            role: true,
           }
         }
       },
@@ -566,13 +704,14 @@ export const getPayrolls = async (req: AuthenticatedRequest, res: Response): Pro
       id: p.id,
       professionalId: p.staffId,
       name: p.staff.name,
+      role: p.staff.role,
       period: `${p.periodStart.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })} al ${p.periodEnd.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit' })}`,
       baseSalary: p.baseSalary,
       commissions: p.commissionsAmount,
       bonuses: 0,
       deductions: 0,
       netPay: p.totalPaid,
-      status: p.status,
+      status: p.status === 'PAID' ? 'PAGADO' : 'PENDIENTE',
       paidAt: p.paidAt,
       createdAt: p.createdAt
     }));

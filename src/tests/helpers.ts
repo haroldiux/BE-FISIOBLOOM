@@ -171,6 +171,7 @@ export async function seedTestDatabase() {
     data: {
       id: 'test-service-id',
       tenantId: tenant.id,
+      branchId: branch.id,
       name: 'Fisioterapia General',
       category: 'FISIOTERAPIA',
       treatmentType: 'SINGLE_SESSION',
@@ -184,6 +185,7 @@ export async function seedTestDatabase() {
     data: {
       id: 'test-product-id',
       tenantId: tenant.id,
+      branchId: branch.id,
       name: 'Gel Conductor 1L',
       category: 'PRODUCTO',
       price: 25,

@@ -45,7 +45,7 @@ export const getSlots = async (req: Request, res: Response): Promise<void> => {
     const { date, serviceId, professionalId } = req.query;
 
     if (!date || !serviceId || !professionalId) {
-      res.status(400).json({ error: 'date, serviceId, and professionalId are required.' });
+      res.status(400).json({ error: 'date, serviceId y professionalId son obligatorios.' });
       return;
     }
 
@@ -139,7 +139,7 @@ export const createBooking = async (req: Request, res: Response): Promise<void> 
     const { fullName, phone, email, serviceId, professionalId, dateTime } = req.body;
 
     if (!fullName || !phone || !serviceId || !professionalId || !dateTime) {
-      res.status(400).json({ error: 'fullName, phone, serviceId, professionalId, and dateTime are required.' });
+      res.status(400).json({ error: 'fullName, phone, serviceId, professionalId y dateTime son obligatorios.' });
       return;
     }
 

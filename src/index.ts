@@ -8,6 +8,7 @@ dotenv.config();
 
 import { tenantMiddleware } from './middlewares/tenant';
 import { initRetouchDaemon } from './services/retouchDaemon';
+import { initNoShowDaemon } from './services/noShowDaemon';
 import authRouter from './routes/auth';
 import professionalsRouter from './routes/professionals';
 import patientsRouter from './routes/patients';
@@ -36,12 +37,14 @@ const PORT = process.env.PORT || 5000;
 
 // Middlewares
 app.use(cors());
-app.use(express.json());
+// Límite elevado (por default son 100kb) porque las fotos de pacientes se envían
+// como Base64 dentro del JSON y una foto de celular real fácilmente pesa varios MB.
+app.use(express.json({ limit: '15mb' }));
 
 // Trap malformed JSON syntax errors (Bug 18)
 app.use((err: any, _req: Request, res: Response, next: any) => {
   if (err instanceof SyntaxError && 'body' in err) {
-    res.status(400).json({ error: 'Invalid JSON payload' });
+    res.status(400).json({ error: 'Formato JSON inválido.' });
     return;
   }
   next(err);
@@ -96,6 +99,7 @@ if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
     initRetouchDaemon();
+    initNoShowDaemon();
   });
 }
 

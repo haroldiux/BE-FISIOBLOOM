@@ -81,7 +81,7 @@ async function main() {
   };
 
   const adminUser = await prisma.user.upsert({
-    where: { email: 'admin@aurafisio.com' },
+    where: { email_tenantId: { email: 'admin@aurafisio.com', tenantId: tenant.id } },
     update: {},
     create: {
       email: 'admin@aurafisio.com',
@@ -106,7 +106,7 @@ async function main() {
   };
 
   const carlosUser = await prisma.user.upsert({
-    where: { email: 'carlos@aurafisio.com' },
+    where: { email_tenantId: { email: 'carlos@aurafisio.com', tenantId: tenant.id } },
     update: {},
     create: {
       email: 'carlos@aurafisio.com',
@@ -131,7 +131,7 @@ async function main() {
   };
 
   const javierUser = await prisma.user.upsert({
-    where: { email: 'javier@aurafisio.com' },
+    where: { email_tenantId: { email: 'javier@aurafisio.com', tenantId: tenant.id } },
     update: {},
     create: {
       email: 'javier@aurafisio.com',
@@ -156,7 +156,7 @@ async function main() {
   };
 
   const claraUser = await prisma.user.upsert({
-    where: { email: 'clara@aurafisio.com' },
+    where: { email_tenantId: { email: 'clara@aurafisio.com', tenantId: tenant.id } },
     update: {},
     create: {
       email: 'clara@aurafisio.com',
@@ -181,7 +181,7 @@ async function main() {
   };
 
   await prisma.user.upsert({
-    where: { email: 'recepcion@aurafisio.com' },
+    where: { email_tenantId: { email: 'recepcion@aurafisio.com', tenantId: tenant.id } },
     update: {},
     create: {
       email: 'recepcion@aurafisio.com',
@@ -255,6 +255,7 @@ async function main() {
       defaultPrice: 120,
       requiresConsent: true,
       tenantId: tenant.id,
+      branchId: branch.id,
     },
   });
 
@@ -271,6 +272,7 @@ async function main() {
       retouchConfig: { retouchAfterDays: 30, maxRetouches: 1 },
       requiresConsent: true,
       tenantId: tenant.id,
+      branchId: branch.id,
     },
   });
 
@@ -286,6 +288,7 @@ async function main() {
       defaultPrice: 90,
       requiresConsent: false,
       tenantId: tenant.id,
+      branchId: branch.id,
     },
   });
 
@@ -301,6 +304,7 @@ async function main() {
       defaultPrice: 110,
       requiresConsent: true,
       tenantId: tenant.id,
+      branchId: branch.id,
     },
   });
 
@@ -316,6 +320,7 @@ async function main() {
       defaultPrice: 130,
       requiresConsent: true,
       tenantId: tenant.id,
+      branchId: branch.id,
     },
   });
 
@@ -331,6 +336,7 @@ async function main() {
       defaultPrice: 80,
       requiresConsent: false,
       tenantId: tenant.id,
+      branchId: branch.id,
     },
   });
 
@@ -347,6 +353,7 @@ async function main() {
       retouchConfig: { retouchAfterDays: 21, maxRetouches: 1 },
       requiresConsent: false,
       tenantId: tenant.id,
+      branchId: branch.id,
     },
   });
 
@@ -362,6 +369,7 @@ async function main() {
       defaultPrice: 95,
       requiresConsent: true,
       tenantId: tenant.id,
+      branchId: branch.id,
     },
   });
 
@@ -377,6 +385,7 @@ async function main() {
       defaultPrice: 85,
       requiresConsent: false,
       tenantId: tenant.id,
+      branchId: branch.id,
     },
   });
 
@@ -392,6 +401,7 @@ async function main() {
       defaultPrice: 150,
       requiresConsent: false,
       tenantId: tenant.id,
+      branchId: branch.id,
     },
   });
   console.log('  10 services created.');
@@ -430,6 +440,7 @@ async function main() {
         unit: prod.unit,
         isActive: true,
         tenantId: tenant.id,
+        branchId: branch.id,
       },
     });
   }
@@ -809,6 +820,7 @@ async function main() {
       id: 'seed-pkg-reductor',
       name: 'Plan Reductor Intensivo Cavitacion',
       description: 'Combo para reduccion corporal en abdomen y piernas.',
+      category: 'CORPORAL',
       validityDays: 90,
       totalPrice: 960,
       tenantId: tenant.id,
@@ -829,6 +841,7 @@ async function main() {
       id: 'seed-pkg-facial-rejuvenecedor',
       name: 'Plan Facial Rejuvenecedor',
       description: 'Combinacion de Limpieza Facial y Radiofrecuencia.',
+      category: 'FACIAL',
       validityDays: 60,
       totalPrice: 1100,
       tenantId: tenant.id,

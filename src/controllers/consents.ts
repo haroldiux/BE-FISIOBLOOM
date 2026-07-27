@@ -10,7 +10,7 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
     const tenantId = req.user!.tenantId;
 
     if (!serviceId || !signatureData) {
-      res.status(400).json({ error: 'serviceId and signatureData are required.' });
+      res.status(400).json({ error: 'serviceId y signatureData son obligatorios.' });
       return;
     }
 
@@ -40,25 +40,31 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
     });
 
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found.' });
+      res.status(404).json({ error: 'Paciente no encontrado.' });
       return;
     }
 
     let finalServiceId = serviceId;
     if (serviceId === 'general') {
+      const branchId = req.user!.branchId || patient.branchId;
       let generalService = await prisma.service.findFirst({
         where: { name: 'Consentimiento General', tenantId },
       });
       if (!generalService) {
+        if (!branchId) {
+          res.status(400).json({ error: 'No se pudo determinar la sucursal para crear el Consentimiento General.' });
+          return;
+        }
         generalService = await prisma.service.create({
           data: {
-            id: `general-service-${tenantId}`,
+            id: `general-service-${tenantId}-${branchId}`,
             name: 'Consentimiento General',
             category: 'ESTETICA',
             defaultDuration: 0,
             defaultPrice: 0,
             requiresConsent: true,
             tenantId,
+            branchId,
           },
         });
       }
@@ -69,7 +75,7 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
       });
 
       if (!service) {
-        res.status(404).json({ error: 'Service not found.' });
+        res.status(404).json({ error: 'Servicio no encontrado.' });
         return;
       }
     }
@@ -81,6 +87,7 @@ export const signConsent = async (req: AuthenticatedRequest, res: Response): Pro
         serviceId: finalServiceId,
         signatureData,
         tenantId,
+        branchId: patient.branchId,
       },
       include: {
         service: {
@@ -111,12 +118,20 @@ export const getConsents = async (req: AuthenticatedRequest, res: Response): Pro
     const tenantId = req.user!.tenantId;
     const userRole = req.user!.role;
 
+    const patientWhere: any = { id: patientId, tenantId };
+    if (userRole === Role.PHYSIO || userRole === Role.AESTHETICIAN) {
+      patientWhere.OR = [
+        { appointments: { some: { professionalId: req.user!.id } } },
+        { createdById: req.user!.id },
+      ];
+    }
+
     const patient = await prisma.patient.findFirst({
-      where: { id: patientId, tenantId },
+      where: patientWhere,
     });
 
     if (!patient) {
-      res.status(404).json({ error: 'Patient not found.' });
+      res.status(404).json({ error: 'Paciente no encontrado.' });
       return;
     }
 
@@ -155,8 +170,21 @@ export const getAllConsents = async (req: AuthenticatedRequest, res: Response): 
     const tenantId = req.user!.tenantId;
     const userRole = req.user!.role;
 
+    const whereClause: any = { tenantId };
+
+    // Un profesional (fisio/esteticista) solo debe ver las firmas de sus propios
+    // pacientes, igual que en la ficha clínica de Pacientes.
+    if (userRole === Role.PHYSIO || userRole === Role.AESTHETICIAN) {
+      whereClause.patient = {
+        OR: [
+          { appointments: { some: { professionalId: req.user!.id } } },
+          { createdById: req.user!.id },
+        ],
+      };
+    }
+
     const consents = await prisma.consentDocument.findMany({
-      where: { tenantId },
+      where: whereClause,
       include: {
         patient: {
           select: {
