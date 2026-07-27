@@ -80,18 +80,34 @@ async function main() {
     sunday: null,
   };
 
+  const superadminPass = await bcrypt.hash('superadmin123', 10);
+  await prisma.user.upsert({
+    where: { email_tenantId: { email: 'superadmin@aurafisio.com', tenantId: tenant.id } },
+    update: { role: Role.SUPER_ADMIN, branchId: null },
+    create: {
+      email: 'superadmin@aurafisio.com',
+      password: superadminPass,
+      name: 'Super Administrador Global',
+      role: Role.SUPER_ADMIN,
+      isActive: true,
+      workingHours: adminWorkingHours,
+      tenantId: tenant.id,
+      branchId: null,
+    },
+  });
+
   const adminUser = await prisma.user.upsert({
     where: { email_tenantId: { email: 'admin@aurafisio.com', tenantId: tenant.id } },
-    update: {},
+    update: { role: Role.SUPER_ADMIN, branchId: null },
     create: {
       email: 'admin@aurafisio.com',
       password: adminPass,
       name: 'Administrador Aura',
-      role: Role.ADMIN,
+      role: Role.SUPER_ADMIN,
       isActive: true,
       workingHours: adminWorkingHours,
       tenantId: tenant.id,
-      branchId: branch.id,
+      branchId: null,
     },
   });
 
