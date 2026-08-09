@@ -700,7 +700,12 @@ export const getGeneralReport = async (req: AuthenticatedRequest, res: Response)
         include: {
           service: { select: { name: true } },
           professional: { select: { id: true, name: true, role: true } },
-          invoice: { select: { total: true } },
+          invoice: {
+            select: {
+              total: true,
+              items: { select: { total: true, product: { select: { category: true } } } },
+            },
+          },
         }
       }),
       // 12. Session consumption movements for top supplies
@@ -927,7 +932,15 @@ export const getGeneralReport = async (req: AuthenticatedRequest, res: Response)
         staffMap[key] = { name: appt.professional.name, role: appt.professional.role, citasAtendidas: 0, ingresos: 0, costoInsumos: 0 };
       }
       staffMap[key].citasAtendidas += 1;
-      staffMap[key].ingresos += appt.invoice?.total ?? 0;
+      // Solo la parte de SERVICIOS de la factura de esta cita — si en el mismo
+      // cobro se vendieron productos sueltos (ej. cremas de mostrador), esos
+      // no son mérito de quien atendió el tratamiento, sino de quien los vendió
+      // (mismo criterio que ya usa finance.ts para las comisiones de staff).
+      const invoiceServiceTotal = (appt.invoice?.items ?? []).reduce(
+        (sum, item) => sum + (item.product?.category === 'PRODUCTO' ? 0 : item.total),
+        0
+      );
+      staffMap[key].ingresos += invoiceServiceTotal;
       staffMap[key].costoInsumos += costoInsumosPorCita[appt.id] ?? 0;
     }
     const staffBreakdown = Object.values(staffMap)

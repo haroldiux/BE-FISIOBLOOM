@@ -11,6 +11,7 @@ import {
   checkScheduleExceptions,
   checkProfessionalCollision,
   checkCabinCollision,
+  checkRequiredConsents,
 } from '../services/appointment.service';
 
 export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
@@ -186,6 +187,18 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
       }
     }
 
+    // 4. Check required consents for the service(s) being booked
+    const consentCheck = await checkRequiredConsents(
+      prisma,
+      patientId,
+      [serviceId, ...(Array.isArray(additionalServiceIds) ? additionalServiceIds : [])],
+      tenantId
+    );
+    if (!consentCheck.valid) {
+      res.status(400).json({ error: consentCheck.error });
+      return;
+    }
+
     // Create the appointment
     const newAppointment = await prisma.appointment.create({
       data: {
@@ -298,6 +311,26 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
           res.status(400).json({ error: 'La cabina ya está ocupada en ese horario' });
           return;
         }
+      }
+    }
+
+    // Check required consents only if the service(s) attached to this cita
+    // actually changed — re-checking on every reprogramación would block
+    // unrelated edits (hora, cabina) for a cita that was already validated.
+    if (serviceId !== undefined || additionalServiceIds !== undefined) {
+      const targetServiceId = serviceId !== undefined ? serviceId : existingAppt.serviceId;
+      const targetAdditionalServiceIds = Array.isArray(additionalServiceIds)
+        ? additionalServiceIds
+        : existingAppt.additionalServiceIds;
+      const consentCheck = await checkRequiredConsents(
+        prisma,
+        existingAppt.patientId,
+        [targetServiceId, ...targetAdditionalServiceIds],
+        tenantId
+      );
+      if (!consentCheck.valid) {
+        res.status(400).json({ error: consentCheck.error });
+        return;
       }
     }
 

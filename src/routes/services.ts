@@ -30,9 +30,6 @@ router.delete('/:id', requireRole([Role.ADMIN]), servicesController.removeServic
 // GET /api/services/:id/consumables - Todos los autenticados pueden listarlos
 router.get('/:id/consumables', servicesController.getConsumables);
 
-// POST /api/services/:id/consumables - Solo administradores
-router.post('/:id/consumables', requireRole([Role.ADMIN]), servicesController.saveConsumables);
-
 // DELETE /api/services/:serviceId/consumables/:productId - Solo administradores
 router.delete('/:serviceId/consumables/:productId', requireRole([Role.ADMIN]), servicesController.deleteConsumable);
 
