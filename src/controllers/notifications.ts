@@ -2,6 +2,21 @@ import { Response } from 'express';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
 
+// Plurales irregulares de las unidades de medida que se pueden elegir al
+// crear un producto (ver UNITS en InventoryScreen.tsx). Las abreviaturas
+// (ml, g) no se pluralizan en español.
+const UNIT_PLURALS: Record<string, string> = {
+  unidad: 'unidades',
+  sesión: 'sesiones',
+  kit: 'kits',
+  ampolla: 'ampollas',
+};
+
+function pluralizeUnit(unit: string, count: number): string {
+  if (count === 1) return unit;
+  return UNIT_PLURALS[unit] || unit;
+}
+
 export interface SystemNotification {
   id: string;
   type: 'low_stock' | 'expiring_package' | 'overdue_retouch' | 'upcoming_retouch' | 'inactive_package';
@@ -118,7 +133,7 @@ export const getNotifications = async (req: AuthenticatedRequest, res: Response)
         title: product.stock === 0 ? 'Sin Stock' : 'Stock Bajo',
         message: product.stock === 0
           ? `${product.name} está agotado. Realiza un pedido inmediato.`
-          : `${product.name} tiene solo ${product.stock} ${product.unit}${product.stock !== 1 ? 's' : ''} disponibles.`,
+          : `${product.name} tiene solo ${product.stock} ${pluralizeUnit(product.unit, product.stock)} disponibles.`,
         entityId: product.id,
         entityName: product.name,
         createdAt: now.toISOString(),

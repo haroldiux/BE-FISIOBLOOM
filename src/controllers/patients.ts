@@ -5,6 +5,21 @@ import { AuthenticatedRequest } from '../middlewares/auth';
 import { storageService } from '../services/storage';
 import { sanitizeXSS } from '../services/sanitize';
 
+// El frontend ya exige teléfono de 8 dígitos y email @gmail.com (ver
+// sanitizePhone/validación en PatientScreen.tsx), pero esas reglas nunca se
+// revalidaban acá — cualquiera con acceso directo a la API podía guardar un
+// teléfono de 3 dígitos o un email de otro dominio. Espejo server-side de la
+// misma regla, para no depender solo de la validación del cliente.
+function validatePatientContactFields(phone: string | undefined, email: string | null | undefined): string | null {
+  if (phone !== undefined && !/^\d{8}$/.test(phone)) {
+    return 'El teléfono debe tener exactamente 8 dígitos.';
+  }
+  if (email && !email.toLowerCase().endsWith('@gmail.com')) {
+    return 'El correo debe terminar en @gmail.com.';
+  }
+  return null;
+}
+
 export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { search, bookingSearch } = req.query;
@@ -81,6 +96,12 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
 
     if (!fullName || !phone) {
       res.status(400).json({ error: 'fullName y phone son obligatorios.' });
+      return;
+    }
+
+    const contactError = validatePatientContactFields(phone, email);
+    if (contactError) {
+      res.status(400).json({ error: contactError });
       return;
     }
 
@@ -265,6 +286,12 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
       return;
     }
 
+    const contactError = validatePatientContactFields(phone, email);
+    if (contactError) {
+      res.status(400).json({ error: contactError });
+      return;
+    }
+
     const updateData: any = {};
     if (fullName !== undefined) updateData.fullName = sanitizeXSS(fullName);
     if (phone !== undefined) updateData.phone = sanitizeXSS(phone);
@@ -311,214 +338,6 @@ export const deletePatient = async (req: AuthenticatedRequest, res: Response): P
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'An error occurred deleting patient.' });
-  }
-};
-
-export const signConsent = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-  try {
-    const patientId = req.params.id as string;
-    const { id, serviceId, signatureData } = req.body;
-    const tenantId = req.user!.tenantId;
-
-    if (!serviceId || !signatureData) {
-      res.status(400).json({ error: 'serviceId y signatureData son obligatorios.' });
-      return;
-    }
-
-    // Check if consent already exists (idempotency for offline sync)
-    if (id) {
-      const existingConsent = await prisma.consentDocument.findFirst({
-        where: { id: String(id), tenantId },
-        include: {
-          service: {
-            select: {
-              name: true,
-            },
-          },
-        },
-      });
-      if (existingConsent) {
-        res.status(200).json({
-          message: 'Consent signed successfully.',
-          consent: existingConsent,
-        });
-        return;
-      }
-    }
-
-    // Verificar que el paciente existe
-    const patient = await prisma.patient.findFirst({
-      where: { id: patientId, tenantId },
-    });
-
-    if (!patient) {
-      res.status(404).json({ error: 'Paciente no encontrado.' });
-      return;
-    }
-
-    let finalServiceId = serviceId;
-    const fallbackBranchId = req.user!.branchId || patient.branchId;
-    if (serviceId === 'general') {
-      let generalService = await prisma.service.findFirst({
-        where: { name: 'Consentimiento General', tenantId },
-      });
-      if (!generalService) {
-        if (!fallbackBranchId) {
-          res.status(400).json({ error: 'No se pudo determinar la sucursal para crear el Consentimiento General.' });
-          return;
-        }
-        generalService = await prisma.service.create({
-          data: {
-            id: `general-service-${tenantId}-${fallbackBranchId}`,
-            name: 'Consentimiento General',
-            category: 'ESTETICA',
-            defaultDuration: 0,
-            defaultPrice: 0,
-            requiresConsent: true,
-            tenantId,
-            branchId: fallbackBranchId,
-          },
-        });
-      }
-      finalServiceId = generalService.id;
-    } else if (serviceId === 'fallback-laser') {
-      let laserService = await prisma.service.findFirst({
-        where: { name: 'Depilación Láser', tenantId },
-      });
-      if (!laserService) {
-        laserService = await prisma.service.findFirst({
-          where: { name: { contains: 'Láser', mode: 'insensitive' }, tenantId },
-        });
-      }
-      if (!laserService) {
-        if (!fallbackBranchId) {
-          res.status(400).json({ error: 'No se pudo determinar la sucursal para crear el servicio de Depilación Láser.' });
-          return;
-        }
-        laserService = await prisma.service.create({
-          data: {
-            id: `laser-service-${tenantId}-${fallbackBranchId}`,
-            name: 'Depilación Láser',
-            category: 'ESTETICA',
-            defaultDuration: 30,
-            defaultPrice: 150,
-            requiresConsent: true,
-            tenantId,
-            branchId: fallbackBranchId,
-          },
-        });
-      }
-      finalServiceId = laserService.id;
-    } else {
-      // Verificar que el servicio existe
-      const service = await prisma.service.findFirst({
-        where: { id: serviceId, tenantId },
-      });
-
-      if (!service) {
-        res.status(404).json({ error: 'Servicio no encontrado.' });
-        return;
-      }
-    }
-
-    // Crear el documento de consentimiento
-    const consent = await prisma.consentDocument.create({
-      data: {
-        id: id ? String(id) : undefined,
-        patientId,
-        serviceId: finalServiceId,
-        signatureData,
-        tenantId,
-        branchId: patient.branchId,
-      },
-      include: {
-        service: {
-          select: {
-            name: true,
-          },
-        },
-      },
-    });
-
-    // Marcar consentSigned como true en el paciente
-    await prisma.patient.update({
-      where: { id: patientId, tenantId },
-      data: { consentSigned: true },
-    });
-
-    res.status(201).json({
-      message: 'Consent signed successfully.',
-      consent,
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || 'An error occurred signing consent.' });
-  }
-};
-
-export const getConsents = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-  try {
-    const patientId = req.params.id as string;
-    const tenantId = req.user!.tenantId;
-
-    const patient = await prisma.patient.findFirst({
-      where: { id: patientId, tenantId },
-    });
-
-    if (!patient) {
-      res.status(404).json({ error: 'Paciente no encontrado.' });
-      return;
-    }
-
-    const consents = await prisma.consentDocument.findMany({
-      where: { patientId, tenantId },
-      include: {
-        service: {
-          select: {
-            name: true,
-            category: true,
-          },
-        },
-      },
-      orderBy: {
-        signedAt: 'desc',
-      },
-    });
-
-    res.json(consents);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || 'An error occurred fetching consent documents.' });
-  }
-};
-
-export const getAllConsents = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-  try {
-    const tenantId = req.user!.tenantId;
-
-    const consents = await prisma.consentDocument.findMany({
-      where: { tenantId },
-      include: {
-        patient: {
-          select: {
-            fullName: true,
-            phone: true,
-            email: true,
-          },
-        },
-        service: {
-          select: {
-            name: true,
-            category: true,
-          },
-        },
-      },
-      orderBy: {
-        signedAt: 'desc',
-      },
-    });
-
-    res.json(consents);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || 'An error occurred fetching all consent documents.' });
   }
 };
 

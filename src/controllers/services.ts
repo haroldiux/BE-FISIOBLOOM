@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { ServiceCategory, TreatmentType } from '@prisma/client';
+import { Role, ServiceCategory, TreatmentType } from '@prisma/client';
 import prisma from '../services/prisma';
 import { AuthenticatedRequest } from '../middlewares/auth';
 
@@ -11,6 +11,13 @@ export const getAllServices = async (req: AuthenticatedRequest, res: Response): 
     const tenantId = req.user!.tenantId;
 
     const where: any = { isActive: true, tenantId };
+
+    // Igual que en Productos: un Admin/staff de sucursal solo ve el catálogo
+    // de servicios de SU sucursal, nunca el de otras. Solo el Súper Admin ve
+    // todo el tenant.
+    if (req.user!.role !== Role.SUPER_ADMIN) {
+      where.branchId = req.user!.branchId;
+    }
 
     if (category && Object.values(ServiceCategory).includes(category as ServiceCategory)) {
       where.category = category as ServiceCategory;
@@ -137,6 +144,11 @@ export const updateService = async (req: AuthenticatedRequest, res: Response): P
       return;
     }
 
+    if (req.user!.role !== Role.SUPER_ADMIN && existing.branchId !== req.user!.branchId) {
+      res.status(403).json({ error: 'No podés modificar servicios de otra sucursal.' });
+      return;
+    }
+
     const resolvedPrice = defaultPrice !== undefined ? defaultPrice : price;
 
     const service = await prisma.service.update({
@@ -178,6 +190,11 @@ export const removeService = async (req: AuthenticatedRequest, res: Response): P
       return;
     }
 
+    if (req.user!.role !== Role.SUPER_ADMIN && existing.branchId !== req.user!.branchId) {
+      res.status(403).json({ error: 'No podés desactivar servicios de otra sucursal.' });
+      return;
+    }
+
     // Soft delete
     await prisma.service.update({
       where: { id: String(id), tenantId },
@@ -204,6 +221,11 @@ export const updateConsumables = async (req: AuthenticatedRequest, res: Response
     const serviceExists = await prisma.service.findFirst({ where: { id: String(id), tenantId } });
     if (!serviceExists) {
       res.status(404).json({ error: 'Servicio no encontrado.' });
+      return;
+    }
+
+    if (req.user!.role !== Role.SUPER_ADMIN && serviceExists.branchId !== req.user!.branchId) {
+      res.status(403).json({ error: 'No podés modificar insumos de servicios de otra sucursal.' });
       return;
     }
 
@@ -453,6 +475,11 @@ export const getConsumables = async (req: AuthenticatedRequest, res: Response): 
       return;
     }
 
+    if (req.user!.role !== Role.SUPER_ADMIN && service.branchId !== req.user!.branchId) {
+      res.status(403).json({ error: 'No podés ver insumos de servicios de otra sucursal.' });
+      return;
+    }
+
     const consumables = await prisma.serviceConsumable.findMany({
       where: { serviceId: id, tenantId },
       include: {
@@ -474,77 +501,6 @@ export const getConsumables = async (req: AuthenticatedRequest, res: Response): 
   }
 };
 
-export const saveConsumables = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-  try {
-    const id = String(req.params.id);
-    const body = req.body;
-    const tenantId = req.user!.tenantId;
-    
-    const items = Array.isArray(body) ? body : (body.consumables || body.items || []);
-
-    if (!Array.isArray(items)) {
-      res.status(400).json({ error: 'El cuerpo debe ser un array o contener un array de insumos (consumables).' });
-      return;
-    }
-
-    const service = await prisma.service.findFirst({
-      where: { id, tenantId },
-    });
-    if (!service) {
-      res.status(404).json({ error: 'Servicio no encontrado.' });
-      return;
-    }
-
-    const saved = await prisma.$transaction(async (tx) => {
-      await tx.serviceConsumable.deleteMany({
-        where: { serviceId: id, tenantId },
-      });
-
-      if (items.length > 0) {
-        for (const item of items) {
-          if (!item.productId || item.quantity === undefined || Number(item.quantity) <= 0) {
-            throw new Error('Cada insumo debe tener productId y una cantidad mayor a 0.');
-          }
-          const product = await tx.product.findFirst({
-            where: { id: String(item.productId), tenantId },
-          });
-          if (!product) {
-            throw new Error(`Producto con id ${item.productId} no encontrado.`);
-          }
-        }
-
-        await tx.serviceConsumable.createMany({
-          data: items.map((item: any) => ({
-            serviceId: id,
-            productId: String(item.productId),
-            quantity: Math.round(Number(item.quantity)),
-            tenantId,
-          })),
-        });
-      }
-
-      return tx.serviceConsumable.findMany({
-        where: { serviceId: id, tenantId },
-        include: {
-          product: {
-            select: {
-              id: true,
-              name: true,
-              price: true,
-              stock: true,
-              unit: true,
-            }
-          }
-        }
-      });
-    });
-
-    res.json(saved);
-  } catch (error: any) {
-    res.status(400).json({ error: error.message || 'Error al guardar los insumos.' });
-  }
-};
-
 export const deleteConsumable = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const serviceId = String(req.params.serviceId);
@@ -556,11 +512,17 @@ export const deleteConsumable = async (req: AuthenticatedRequest, res: Response)
         serviceId,
         productId,
         tenantId,
-      }
+      },
+      include: { service: true },
     });
 
     if (!consumable) {
       res.status(404).json({ error: 'Insumo no encontrado en este servicio.' });
+      return;
+    }
+
+    if (req.user!.role !== Role.SUPER_ADMIN && consumable.service.branchId !== req.user!.branchId) {
+      res.status(403).json({ error: 'No podés modificar insumos de servicios de otra sucursal.' });
       return;
     }
 

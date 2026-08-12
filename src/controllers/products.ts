@@ -10,6 +10,13 @@ export const getAll = async (req: AuthenticatedRequest, res: Response): Promise<
 
     const where: any = { isActive: true, tenantId };
 
+    // Igual que en el resto del sistema (sucursales, nóminas, stock por
+    // sucursal): un Admin de sucursal solo ve el catálogo de SU sucursal,
+    // nunca el de otras. Solo el Súper Admin ve todo el tenant.
+    if (req.user!.role !== Role.SUPER_ADMIN) {
+      where.branchId = req.user!.branchId;
+    }
+
     if (category) {
       where.category = category as string;
     }
@@ -93,6 +100,11 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
       return;
     }
 
+    if (req.user!.role !== Role.SUPER_ADMIN && existing.branchId !== req.user!.branchId) {
+      res.status(403).json({ error: 'No podés modificar productos de otra sucursal.' });
+      return;
+    }
+
     const product = await prisma.$transaction(async (tx) => {
       const updated = await tx.product.update({
         where: { id: String(id), tenantId },
@@ -136,6 +148,11 @@ export const remove = async (req: AuthenticatedRequest, res: Response): Promise<
       return;
     }
 
+    if (req.user!.role !== Role.SUPER_ADMIN && existing.branchId !== req.user!.branchId) {
+      res.status(403).json({ error: 'No podés desactivar productos de otra sucursal.' });
+      return;
+    }
+
     // Soft delete
     await prisma.product.update({
       where: { id: String(id), tenantId },
@@ -152,12 +169,13 @@ export const getLowStock = async (req: AuthenticatedRequest, res: Response): Pro
   try {
     const tenantId = req.user!.tenantId;
 
+    const where: any = { isActive: true, stock: { lt: 5 }, tenantId };
+    if (req.user!.role !== Role.SUPER_ADMIN) {
+      where.branchId = req.user!.branchId;
+    }
+
     const products = await prisma.product.findMany({
-      where: {
-        isActive: true,
-        stock: { lt: 5 },
-        tenantId,
-      },
+      where,
       orderBy: { stock: 'asc' },
     });
 
@@ -178,6 +196,11 @@ export const getMovements = async (req: AuthenticatedRequest, res: Response): Pr
     }
     if (type) {
       where.type = type as any;
+    }
+    // Igual que el resto del catálogo: un Admin de sucursal solo ve el
+    // historial de movimientos de los productos de SU sucursal.
+    if (req.user!.role !== Role.SUPER_ADMIN) {
+      where.product = { branchId: req.user!.branchId };
     }
 
     const movements = await prisma.inventoryMovement.findMany({
@@ -250,6 +273,10 @@ export const adjustStock = async (req: AuthenticatedRequest, res: Response): Pro
         throw new Error('PRODUCT_NOT_FOUND');
       }
 
+      if (req.user!.role !== Role.SUPER_ADMIN && product.branchId !== req.user!.branchId) {
+        throw new Error('FORBIDDEN_BRANCH');
+      }
+
       const stockDiff = type === 'STOCK_IN' ? Math.round(qty) : -Math.round(qty);
       const newStock = product.stock + stockDiff;
 
@@ -264,6 +291,7 @@ export const adjustStock = async (req: AuthenticatedRequest, res: Response): Pro
           type,
           quantity: Math.round(qty),
           notes: notes || 'Ajuste manual de stock',
+          branchId: product.branchId,
           tenantId,
         }
       });
@@ -290,6 +318,8 @@ export const adjustStock = async (req: AuthenticatedRequest, res: Response): Pro
   } catch (error: any) {
     if (error.message === 'PRODUCT_NOT_FOUND') {
       res.status(404).json({ error: 'Producto no encontrado.' });
+    } else if (error.message === 'FORBIDDEN_BRANCH') {
+      res.status(403).json({ error: 'No podés ajustar el stock de productos de otra sucursal.' });
     } else if (error.message === 'STOCK_NEGATIVE') {
       res.status(400).json({ error: 'El stock resultante no puede ser negativo.' });
     } else {

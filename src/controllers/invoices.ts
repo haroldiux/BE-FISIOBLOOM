@@ -290,6 +290,19 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
               data: { stock: { decrement: qty } },
             });
           }
+
+          // Dejar rastro en el historial de movimientos de inventario (misma
+          // trazabilidad que el consumo automático por sesión y los ajustes manuales)
+          await tx.inventoryMovement.create({
+            data: {
+              productId: item.productId,
+              type: 'STOCK_OUT',
+              quantity: qty,
+              notes: `Venta en Terminal POS (Factura ${created.id})`,
+              branchId: branchId || null,
+              tenantId,
+            },
+          });
         }
       }
 

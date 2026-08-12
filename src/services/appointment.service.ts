@@ -248,6 +248,53 @@ export async function checkProfessionalCollision(
 }
 
 /**
+ * Verifica que el paciente tenga firmado el consentimiento informado de cada
+ * servicio marcado como `requiresConsent` entre los que se están agendando.
+ * Un servicio sin firma bloquea la cita entera — no alcanza con firmar
+ * "Consentimiento General", tiene que ser el consentimiento de ESE servicio
+ * puntual (misma tabla ConsentDocument, filtrada por patientId + serviceId).
+ */
+export async function checkRequiredConsents(
+  client: any,
+  patientId: string,
+  serviceIds: string[],
+  tenantId: string
+): Promise<{ valid: boolean; error?: string }> {
+  const ids = serviceIds.filter(Boolean);
+  if (ids.length === 0) {
+    return { valid: true };
+  }
+
+  const services = await client.service.findMany({
+    where: { id: { in: ids }, tenantId, requiresConsent: true },
+    select: { id: true, name: true },
+  });
+  if (services.length === 0) {
+    return { valid: true };
+  }
+
+  const missing: string[] = [];
+  for (const service of services) {
+    const signed = await client.consentDocument.findFirst({
+      where: { patientId, serviceId: service.id, tenantId },
+      select: { id: true },
+    });
+    if (!signed) {
+      missing.push(service.name);
+    }
+  }
+
+  if (missing.length > 0) {
+    return {
+      valid: false,
+      error: `El paciente no tiene firmado el consentimiento informado de: ${missing.join(', ')}. Andá a la ficha del paciente → pestaña "Consentimiento" y hacé firmar el consentimiento de ese servicio antes de agendar la cita.`,
+    };
+  }
+
+  return { valid: true };
+}
+
+/**
  * Verifica que la cabina no tenga otra cita activa que se solape en ese horario.
  */
 export async function checkCabinCollision(
