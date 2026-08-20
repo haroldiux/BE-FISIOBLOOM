@@ -58,6 +58,10 @@ model Branch {
   name               String
   address            String?
   phone              String?
+  // Paleta/color propios de esta sucursal (branding). Cada Admin de
+  // sucursal solo ve y edita el de la suya — antes vivía en Tenant.settings
+  // y se compartía por error entre todas las sucursales y el Súper Admin.
+  branding           Json?
   isActive           Boolean             @default(true)
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
