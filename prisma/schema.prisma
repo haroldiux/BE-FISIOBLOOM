@@ -48,6 +48,7 @@ model Tenant {
   attendances       Attendance[]
   scheduleExceptions ScheduleException[]
   branchStocks      BranchStock[]
+  cabins            Cabin[]
 }
 
 model Branch {
@@ -73,6 +74,7 @@ model Branch {
   treatmentPackages          TreatmentPackage[]
   sourceBranchMovements      InventoryMovement[] @relation("SourceBranchMovements")
   destinationBranchMovements InventoryMovement[] @relation("DestinationBranchMovements")
+  cabins                     Cabin[]
 
   @@index([tenantId])
 }
@@ -352,6 +354,29 @@ enum ServiceCategory {
   CORPORAL
   FISIOTERAPIA
   ESTETICA
+}
+
+// Cabina/box físico de una sucursal. Cada categoría (Facial, Corporal,
+// Fisioterapia, Estética) tiene su propio set de cabinas — la cantidad de
+// cabinas activas de una categoría es literalmente cuántas citas de esa
+// especialidad pueden pasar al mismo tiempo (ver checkCabinCollision). El
+// Administrador controla cuántas hay agregando filas nuevas, y las
+// desactiva (nunca las borra) cuando una está rota/en reparación, para no
+// perder el historial de las citas que ya la usaron.
+model Cabin {
+  id        String          @id @default(uuid())
+  tenantId  String
+  tenant    Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchId  String
+  branch    Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  name      String
+  category  ServiceCategory
+  isActive  Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@unique([branchId, name])
+  @@index([tenantId, branchId])
 }
 
 enum TreatmentType {

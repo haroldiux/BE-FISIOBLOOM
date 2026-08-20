@@ -303,7 +303,8 @@ export async function checkCabinCollision(
   dateTime: Date,
   duration: number,
   tenantId: string,
-  excludeAppointmentId?: string
+  excludeAppointmentId?: string,
+  branchId?: string | null
 ): Promise<boolean> {
   const newStart = dateTime.getTime();
   const newEnd = newStart + duration * 60 * 1000;
@@ -312,6 +313,11 @@ export async function checkCabinCollision(
     where: {
       tenantId,
       cabin,
+      // Dos sucursales pueden tener una cabina con el mismo nombre (ej.
+      // "Cabina Facial 1") sin que una cita en una bloquee un horario en la
+      // otra — si no sabemos la sucursal (citas viejas sin branchId), no se
+      // filtra y se compara contra todo el tenant como antes.
+      branchId: branchId || undefined,
       status: {
         in: [AppointmentStatus.PENDIENTE, AppointmentStatus.CONFIRMADA, AppointmentStatus.COMPLETADA],
       },

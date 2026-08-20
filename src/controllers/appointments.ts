@@ -157,6 +157,19 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
       }
     }
 
+    // Resolvemos la sucursal de la cita a partir de la del profesional que
+    // atiende — se usa para que la colisión de cabina compare solo dentro de
+    // la misma sucursal (dos sucursales pueden tener una cabina con el mismo
+    // nombre, ej. "Cabina Facial 1", sin que se bloqueen entre sí).
+    const professional = await prisma.user.findFirst({
+      where: { id: professionalId, tenantId },
+      select: { branchId: true },
+    });
+    if (!professional) {
+      res.status(404).json({ error: 'Profesional no encontrado.' });
+      return;
+    }
+
     // 1. Check working hours availability
     const scheduleCheck = await checkWorkingHours(prisma, professionalId, apptDate, Number(duration), tenantId);
     if (!scheduleCheck.valid) {
@@ -180,7 +193,7 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
 
     // 3. Check for cabin collision
     if (cabin) {
-      const cabinCollision = await checkCabinCollision(prisma, cabin, apptDate, Number(duration), tenantId);
+      const cabinCollision = await checkCabinCollision(prisma, cabin, apptDate, Number(duration), tenantId, undefined, professional.branchId);
       if (cabinCollision) {
         res.status(400).json({ error: 'La cabina ya está ocupada en ese horario' });
         return;
@@ -204,6 +217,7 @@ export const create = async (req: AuthenticatedRequest, res: Response): Promise<
       data: {
         id: id ? String(id) : undefined,
         tenantId,
+        branchId: professional.branchId,
         patientId,
         professionalId,
         serviceId: serviceId || null,
@@ -270,6 +284,22 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
     const targetDuration = duration !== undefined ? Number(duration) : existingAppt.duration;
     const targetCabin = cabin !== undefined ? cabin : existingAppt.cabin;
 
+    // Si cambia el profesional, la cita puede pasar a otra sucursal — se
+    // vuelve a resolver desde el nuevo profesional. Si no cambia, se
+    // conserva la que ya tenía la cita.
+    let targetBranchId = existingAppt.branchId;
+    if (professionalId && professionalId !== existingAppt.professionalId) {
+      const newProfessional = await prisma.user.findFirst({
+        where: { id: professionalId, tenantId },
+        select: { branchId: true },
+      });
+      if (!newProfessional) {
+        res.status(404).json({ error: 'Profesional no encontrado.' });
+        return;
+      }
+      targetBranchId = newProfessional.branchId;
+    }
+
     // Validate working hours and overlap only if date, time, duration, professional, or cabin changed
     if (professionalId || dateTime || duration !== undefined || cabin !== undefined) {
       const scheduleCheck = await checkWorkingHours(prisma, targetProfessionalId, targetDateTime, targetDuration, tenantId);
@@ -305,7 +335,8 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
           targetDateTime,
           targetDuration,
           tenantId,
-          id as string
+          id as string,
+          targetBranchId
         );
         if (cabinCollision) {
           res.status(400).json({ error: 'La cabina ya está ocupada en ese horario' });
@@ -418,6 +449,7 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
           where: { id: id as string, tenantId },
           data: {
             professionalId: targetProfessionalId,
+            branchId: targetBranchId,
             serviceId: serviceId !== undefined ? serviceId : existingAppt.serviceId,
             additionalServiceIds: Array.isArray(additionalServiceIds) ? additionalServiceIds : existingAppt.additionalServiceIds,
             dateTime: targetDateTime,
@@ -447,6 +479,7 @@ export const update = async (req: AuthenticatedRequest, res: Response): Promise<
         where: { id: id as string, tenantId },
         data: {
           professionalId: targetProfessionalId,
+          branchId: targetBranchId,
           serviceId: serviceId !== undefined ? serviceId : existingAppt.serviceId,
           additionalServiceIds: Array.isArray(additionalServiceIds) ? additionalServiceIds : existingAppt.additionalServiceIds,
           dateTime: targetDateTime,
