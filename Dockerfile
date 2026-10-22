@@ -37,4 +37,4 @@ EXPOSE 5000
 ENV PORT=5000
 ENV NODE_ENV=production
 
-CMD ["node", "dist/index.js"]
+CMD ["sh", "-c", "until nc -z db 5432; do echo 'Esperando a PostgreSQL...'; sleep 1; done; echo 'Postgres activo. Sincronizando esquema...'; npx prisma db push --accept-data-loss && echo 'Sembrando datos iniciales...' && node dist/prisma/seed.js && echo 'Iniciando FisioBloom...' && node dist/index.js"]
