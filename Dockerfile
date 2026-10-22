@@ -31,10 +31,11 @@ COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/clie
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/prisma.config.js ./
+COPY start.js ./
 
 EXPOSE 5000
 
 ENV PORT=5000
 ENV NODE_ENV=production
 
-CMD ["sh", "-c", "until nc -z db 5432; do echo 'Esperando a PostgreSQL...'; sleep 1; done; echo 'Postgres activo. Sincronizando esquema...'; npx prisma db push --accept-data-loss && echo 'Sembrando datos iniciales...' && node dist/prisma/seed.js && echo 'Iniciando FisioBloom...' && node dist/index.js"]
+CMD ["node", "start.js"]
